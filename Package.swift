@@ -20,6 +20,13 @@ let package = Package(
             dependencies: ["ScrobblerCore"]
         ),
 
+        // A command-line debug tool: lists installed games, or prints games
+        // as they start and stop (`swift run gs-detect --watch`).
+        .executableTarget(
+            name: "gs-detect",
+            dependencies: ["ScrobblerCore"]
+        ),
+
         // Tests for ScrobblerCore, written with Swift Testing (`import Testing`).
         .testTarget(
             name: "ScrobblerCoreTests",

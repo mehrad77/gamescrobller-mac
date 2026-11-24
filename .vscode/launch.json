@@ -19,6 +19,26 @@
             "target": "GSScrobbler",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release GSScrobbler"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gamescrobller-mac}",
+            "name": "Debug gs-detect",
+            "target": "gs-detect",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug gs-detect"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:gamescrobller-mac}",
+            "name": "Release gs-detect",
+            "target": "gs-detect",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release gs-detect"
         }
     ]
 }

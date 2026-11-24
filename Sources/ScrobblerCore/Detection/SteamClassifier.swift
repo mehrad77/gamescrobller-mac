@@ -17,6 +17,12 @@ public struct SteamClassifier: GameClassifier {
         public let name: String
         /// The game's folder, `<library>/steamapps/common/<installdir>`.
         public let installURL: URL
+
+        /// The same `DetectedGame` that `classify` returns for this game's
+        /// processes, so an installed game and a running one compare equal.
+        public var detectedGame: DetectedGame {
+            DetectedGame(id: installURL.path(percentEncoded: false), name: name, source: .steam(appID: appID))
+        }
     }
 
     /// Installed games keyed by their install folder path, so a lookup is one
@@ -48,9 +54,7 @@ public struct SteamClassifier: GameClassifier {
               let installed = installedApps[Self.key(for: installURL)]
         else { return nil }
 
-        return DetectedGame(id: installed.installURL.path(percentEncoded: false),
-                            name: installed.name,
-                            source: .steam(appID: installed.appID))
+        return installed.detectedGame
     }
 
     // MARK: - Reading Steam's files

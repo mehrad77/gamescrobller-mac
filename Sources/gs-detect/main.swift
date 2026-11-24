@@ -1,10 +1,9 @@
-// A file named main.swift is the program's entry point: its top-level code
-// runs from top to bottom when the executable starts. Later this becomes a
-// SwiftUI `App` marked with `@main` instead.
+// `gs-detect`: a command-line debug tool for the detection code, separate
+// from the menu bar app. A file named main.swift is a program's entry point:
+// its top-level code runs from top to bottom.
 //
-// For now it is a small debug tool:
-//   swift run GSScrobbler           lists the games this Mac has
-//   swift run GSScrobbler --watch   prints games as they start and stop
+//   swift run gs-detect           lists the games this Mac has
+//   swift run gs-detect --watch   prints games as they start and stop
 
 import Foundation
 import ScrobblerCore
@@ -22,30 +21,15 @@ if CommandLine.arguments.contains("--watch") {
 }
 
 func listInstalledGames() {
-    // `try?` turns a thrown error into nil, and `?? []` then gives an empty
-    // list: if /Applications cannot be read we print nothing instead of crashing.
-    let apps = (try? FileManager.default.contentsOfDirectory(
-        at: URL(filePath: "/Applications"), includingPropertiesForKeys: nil)) ?? []
-
-    // `compactMap` transforms each element and drops the nils, so only games
-    // remain. `sorted { … }` takes a closure that says which of two comes first.
-    let appStoreGames = apps
-        .filter { $0.pathExtension == "app" }
-        .compactMap { appStore.classify(appURL: $0) }
-        .sorted { $0.name < $1.name }
-
-    print("App Store games in /Applications: \(appStoreGames.count)")
-    for game in appStoreGames {
+    let games = InstalledGames.scan(appStore: appStore, steam: steam)
+    log("Games this Mac has: \(games.count)")
+    for game in games {
         // `if case` pulls the associated value out of one enum case.
         if case .appStore(let adamID) = game.source {
-            print("  \(game.name)  [\(game.id)]  apple:\(adamID)  ->  needs mapping")
+            log("  \(game.name)  [App Store, apple:\(adamID)]  ->  needs mapping")
+        } else if let ref = game.defaultRef {
+            log("  \(game.name)  ->  \(ref)")
         }
-    }
-
-    let steamGames = steam.installedApps.values.sorted { $0.name < $1.name }
-    print("\nSteam games installed: \(steamGames.count)")
-    for app in steamGames {
-        print("  \(app.name)  ->  steam:\(app.appID)")
     }
 }
 
