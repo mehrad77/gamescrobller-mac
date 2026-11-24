@@ -20,14 +20,30 @@ final class AppModel {
         var id: String { game.id }
     }
 
+    /// What the Settings window shows about the server.
+    enum Connection {
+        case notChecked
+        case checking
+        case connected(GSProfile)
+        case failed(String)
+    }
+
     private(set) var running: [RunningGame] = []
     private(set) var installed: [DetectedGame] = []
+    /// Whether a token is in the Keychain. The token itself never lives here.
+    private(set) var hasToken = false
+    private(set) var connection: Connection = .notChecked
 
     // Not part of the UI state, so they need not be observed.
     @ObservationIgnored private let monitor = ProcessMonitor()
     @ObservationIgnored private var watchTask: Task<Void, Never>?
+    @ObservationIgnored private let tokenStore = KeychainTokenStore()
 
     init() {
+        // `try?` turns a thrown error into nil; `?? false` then treats an
+        // unreadable Keychain like "no token".
+        hasToken = (try? tokenStore.hasToken()) ?? false
+
         let appStore = AppStoreClassifier()
         let steam = SteamClassifier()
         installed = InstalledGames.scan(appStore: appStore, steam: steam)
@@ -40,6 +56,65 @@ final class AppModel {
                 for gameEvent in await tracker.handle(processEvent) {
                     self?.apply(gameEvent)
                 }
+            }
+        }
+    }
+
+    // MARK: - Settings
+
+    /// Saves a pasted token to the Keychain, then checks it against the server.
+    func saveToken(_ text: String) {
+        let token = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        do {
+            try tokenStore.save(token)
+            hasToken = true
+            checkConnection()
+        } catch {
+            connection = .failed("Could not save the token: \(error)")
+        }
+    }
+
+    func removeToken() {
+        do {
+            try tokenStore.delete()
+            hasToken = false
+            connection = .notChecked
+        } catch {
+            connection = .failed("Could not remove the token: \(error)")
+        }
+    }
+
+    /// Calls `GET /me` with the saved token and shows who it belongs to.
+    func checkConnection() {
+        guard let baseURL = AppSettings.baseURL else {
+            connection = .failed("The server address is not a valid http or https URL.")
+            return
+        }
+        let token: String
+        do {
+            guard let saved = try tokenStore.token() else {
+                connection = .failed("No token saved.")
+                return
+            }
+            token = saved
+        } catch {
+            connection = .failed("Could not read the token: \(error)")
+            return
+        }
+
+        connection = .checking
+        let client = GSClient(baseURL: baseURL, token: token)
+        // This `Task` runs on the main actor, like the rest of the model, but
+        // `await` lets the main thread do other work while the request is out.
+        Task {
+            // `do throws(GSClientError)` states the error type, so `error` in
+            // `catch` is a `GSClientError` and has `summary`. Without it, a
+            // `do` inside a closure gives a plain `any Error`.
+            do throws(GSClientError) {
+                connection = .connected(try await client.me())
+            } catch {
+                connection = .failed(error.summary)
             }
         }
     }

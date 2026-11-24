@@ -13,6 +13,11 @@ struct MenuContent: View {
     /// redraws it when `running` or `installed` change.
     let model: AppModel
 
+    /// An *environment value*: something SwiftUI provides to every view, read
+    /// with `@Environment`. `openSettings` is an action that opens the
+    /// app's Settings window.
+    @Environment(\.openSettings) private var openSettings
+
     var body: some View {
         Section("Now playing") {
             if model.running.isEmpty {
@@ -21,7 +26,8 @@ struct MenuContent: View {
                 // `ForEach` repeats a view for each element; it needs
                 // `Identifiable` elements so it can tell them apart.
                 ForEach(model.running) { running in
-                    // `Text(_:format:)` formats the date for the user's locale.
+                    // `formatted(date:time:)` writes the time in the user's
+                    // locale and 12/24-hour setting, such as "18:05".
                     Text("\(running.game.name), since \(running.startedAt.formatted(date: .omitted, time: .shortened))")
                 }
             }
@@ -38,6 +44,13 @@ struct MenuContent: View {
         Divider()
 
         Text("GameScrobbler for Mac \(ScrobblerCore.version)")
+        Button("Settings…") {
+            // A menu bar app is never the active app on its own, so the
+            // Settings window would open behind other windows without this.
+            NSApplication.shared.activate()
+            openSettings()
+        }
+        .keyboardShortcut(",")
         // `.keyboardShortcut("q")` gives the item a ⌘Q shortcut.
         Button("Quit") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")

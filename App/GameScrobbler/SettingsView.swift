@@ -1,0 +1,79 @@
+import ScrobblerCore
+import SwiftUI
+
+/// The Settings window (⌘, from the menu): the server address and the token.
+struct SettingsView: View {
+    let model: AppModel
+
+    /// `@AppStorage` is a property wrapper that reads and writes one
+    /// `UserDefaults` key, and redraws the view when it changes. The value
+    /// after `=` is used while nothing is saved yet.
+    @AppStorage(AppSettings.baseURLKey) private var baseURL = GSClient.productionBaseURL.absoluteString
+
+    /// What is typed in the token field. `@State` keeps it only while the
+    /// window is open; it is never saved anywhere but the Keychain.
+    @State private var tokenDraft = ""
+
+    var body: some View {
+        Form {
+            Section("Server") {
+                // `$baseURL` is the wrapper's *projected value*: a `Binding`,
+                // a two-way link that lets the text field change the setting.
+                TextField("API address", text: $baseURL)
+                Text("Production: \(GSClient.productionBaseURL.absoluteString). A local stack: http://localhost:8000/v1.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Personal access token") {
+                // A `SecureField` shows dots instead of the text.
+                SecureField("gsp_…", text: $tokenDraft)
+                HStack {
+                    Text(model.hasToken ? "A token is saved in your Keychain." : "No token saved.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove", role: .destructive) { model.removeToken() }
+                        .disabled(!model.hasToken)
+                    Button("Save") {
+                        model.saveToken(tokenDraft)
+                        tokenDraft = ""
+                    }
+                    .disabled(tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.defaultAction)  // Return presses it
+                }
+                Text("Create one on gamescrobbler.com in your developer settings, with the activity:write and library:write scopes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Connection") {
+                HStack {
+                    connectionStatus
+                    Spacer()
+                    Button("Check connection") { model.checkConnection() }
+                        .disabled(!model.hasToken)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 480)
+    }
+
+    /// A computed property can return part of a view, to keep `body` short.
+    /// `@ViewBuilder` lets it use `switch`, giving a different view per case.
+    @ViewBuilder
+    private var connectionStatus: some View {
+        switch model.connection {
+        case .notChecked:
+            Text("Not checked yet").foregroundStyle(.secondary)
+        case .checking:
+            ProgressView().controlSize(.small)
+        case .connected(let profile):
+            Label("Signed in as \(profile.displayName ?? profile.handle ?? profile.id)", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+    }
+}

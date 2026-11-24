@@ -7,9 +7,9 @@ import SwiftUI
 ///
 ///     App  ->  Scene(s)  ->  View(s)
 ///
-/// Here the only scene is a `MenuBarExtra`: an icon in the menu bar with a
-/// menu. There is no window, and the `LSUIElement` setting in the Xcode
-/// project ("Application is agent") keeps the app out of the Dock.
+/// There are two scenes: a `MenuBarExtra` (an icon in the menu bar with a
+/// menu) and `Settings`, the window ⌘, opens. The `LSUIElement` setting in
+/// the Xcode project ("Application is agent") keeps the app out of the Dock.
 @main
 struct GameScrobblerApp: App {
     /// `@State` makes SwiftUI own this object for the app's whole life: it is
@@ -25,6 +25,11 @@ struct GameScrobblerApp: App {
             // The menu bar icon: filled while a game is running.
             // `systemImage` names an SF Symbol, Apple's built-in icon set.
             Image(systemName: model.running.isEmpty ? "gamecontroller" : "gamecontroller.fill")
+        }
+
+        // Both scenes get the same `model`, so they share one state.
+        Settings {
+            SettingsView(model: model)
         }
     }
 }
