@@ -7,9 +7,11 @@
 ///     g_7k2m9q4xzt     -> .gameID("g_7k2m9q4xzt")
 ///     mini-motorways   -> .slug("mini-motorways")
 ///     steam:570        -> .store(.steam, id: "570")
+///     apple:1456188526 -> .store(.apple, id: "1456188526")
 ///
-/// Numeric ids (`570`) are internal to GameScrobbler and refused by the API
-/// (ADR-064, gs-mono PR 442), so there is deliberately no case for them.
+/// Numeric ids (`570`) are GameScrobbler's internal ids. The API still reads
+/// them today, but refuses them once gs-mono PR 442 (ADR-064) merges, so the
+/// app never sends one and there is deliberately no case for them.
 ///
 /// API docs:
 /// - Endpoint reference (`POST /me/sessions`, `startSession`):
@@ -24,12 +26,36 @@ public enum GameRef: Hashable, Sendable {
     case slug(String)
     case store(Store, id: String)
 
-    /// Store prefixes the app knows how to produce. `String` as the *raw value*
-    /// type means each case has a text form: `Store.steam.rawValue == "steam"`.
-    public enum Store: String, CaseIterable, Sendable {
-        case steam
-        case gog
-        case epic
+    /// A store prefix, such as `steam` in `steam:570`.
+    ///
+    /// An *open* type, like `GSAPIError.Code`: the server knows more stores
+    /// than this app produces (`xbox`, `itch`, `amazon`, ...) and may add
+    /// more, so any well-formed prefix is allowed and the server decides
+    /// whether it knows it (an unknown store answers 404, like an unknown
+    /// game). The `static let`s are the prefixes the app itself writes.
+    public struct Store: RawRepresentable, Hashable, Sendable {
+        public let rawValue: String
+
+        /// `RawRepresentable` asks for a *failable* `init?(rawValue:)`; here it
+        /// checks the server's prefix syntax: a lowercase letter, then 1 to 15
+        /// lowercase letters or digits. Matching is case-sensitive, as on the
+        /// server, so `Steam` is refused.
+        public init?(rawValue: String) {
+            guard rawValue.wholeMatch(of: GameRef.storePrefixPattern) != nil else { return nil }
+            self.rawValue = rawValue
+        }
+
+        /// For the constants below, which are known to be well-formed.
+        private init(known rawValue: String) {
+            self.rawValue = rawValue
+        }
+
+        public static let steam = Store(known: "steam")
+        public static let gog = Store(known: "gog")
+        public static let epic = Store(known: "epic")
+        /// Mac App Store and Apple Arcade games, by their App Store ("Adam")
+        /// id (gs-mono PR 463). The server only resolves ids its catalogue has.
+        public static let apple = Store(known: "apple")
     }
 
     /// The exact text the API expects in the `game` field.
@@ -66,6 +92,10 @@ extension GameRef {
     /// A slug: starts with a letter or digit, then letters, digits, `.`, `_`, `-`.
     static var slugPattern: Regex<Substring> { #/[A-Za-z0-9][A-Za-z0-9._-]{0,199}/# }
     static var digitsPattern: Regex<Substring> { #/[0-9]+/# }
+    /// A store prefix: a lowercase letter, then 1 to 15 lowercase letters or digits.
+    static var storePrefixPattern: Regex<Substring> { #/[a-z][a-z0-9]{1,15}/# }
+    /// The store's own id after the colon: letters, digits, `.`, `_`, `-`.
+    static var storeIDPattern: Regex<Substring> { #/[A-Za-z0-9._-]{1,200}/# }
 
     /// Parses what a person types into the mapping editor, in the server's
     /// order: digits are refused, an id-shaped text is an id, `store:id` is a
@@ -92,10 +122,11 @@ extension GameRef {
         // `split` cuts at the colon. maxSplits: 1 keeps "a:b:c" as ["a", "b:c"].
         let parts = text.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
         if parts.count == 2 {
-            // `Store(rawValue:)` is itself failable: unknown prefixes give nil.
+            // `Store(rawValue:)` is itself failable: a malformed prefix gives
+            // nil. A well-formed one the server does not know still parses;
+            // the server answers 404 for it, just as for an unknown game.
             guard let store = Store(rawValue: String(parts[0])),
-                  !parts[1].isEmpty,
-                  !parts[1].contains(where: \.isWhitespace)
+                  parts[1].wholeMatch(of: Self.storeIDPattern) != nil
             else { return nil }
             self = .store(store, id: String(parts[1]))
             return

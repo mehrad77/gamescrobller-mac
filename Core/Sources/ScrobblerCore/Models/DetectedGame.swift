@@ -31,16 +31,17 @@ public struct DetectedGame: Hashable, Identifiable, Sendable {
     }
 
     /// The reference to send to GameScrobbler when nobody has mapped this game
-    /// by hand, or `nil` when the server has no way to name it yet.
+    /// by hand: the store's own id, such as `steam:570` or `apple:1456188526`.
     ///
-    /// App Store games return nil: GameScrobbler has no `apple:` prefix, so
-    /// those need a manual mapping to a GS slug or id (a later step).
-    public var defaultRef: GameRef? {
+    /// Not optional: every source has a store prefix. A `switch` must cover
+    /// every case, so adding a source (GOG, Epic) without a reference here is a
+    /// build error, not a silent gap.
+    public var defaultRef: GameRef {
         switch source {
         case .steam(let appID):
             return .store(.steam, id: String(appID))
-        case .appStore:
-            return nil
+        case .appStore(let adamID):
+            return .store(.apple, id: String(adamID))
         }
     }
 }

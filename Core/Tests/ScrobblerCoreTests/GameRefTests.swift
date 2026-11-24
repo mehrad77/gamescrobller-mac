@@ -12,6 +12,7 @@ struct GameRefTests {
         ("celeste.2018_v2", GameRef.slug("celeste.2018_v2")),
         ("steam:570", GameRef.store(.steam, id: "570")),
         ("gog:1207658924", GameRef.store(.gog, id: "1207658924")),
+        ("apple:1456188526", GameRef.store(.apple, id: "1456188526")),
     ])
     func parsesValid(text: String, expected: GameRef) {
         #expect(GameRef(parsing: text) == expected)
@@ -19,15 +20,28 @@ struct GameRefTests {
 
     @Test("rejects invalid references", arguments: [
         "",                        // empty
-        "570",                     // numeric ids are refused by the API
+        "570",                     // numeric ids are not sent (PR 442)
         "mini motorways",          // contains a space
         "-starts-with-dash",       // a slug must start with a letter or digit
-        "apple:1456188526",        // the server has no apple: prefix
         "steam:",                  // store without an id
+        "Steam:570",               // prefixes are lowercase, as on the server
+        "s:1",                     // a prefix has at least 2 characters
+        "steam:570#x",             // `#` is not allowed in a store id
+        "steam:a:b",               // nor is a second colon
         String(repeating: "a", count: 201), // over the server's 200-char limit
     ])
     func rejectsInvalid(text: String) {
         #expect(GameRef(parsing: text) == nil)
+    }
+
+    @Test("accepts any well-formed store prefix, not just the ones the app writes")
+    func acceptsOtherStores() throws {
+        // The server knows stores this app never produces; it decides whether
+        // a prefix is known, so the parser only checks the shape.
+        for text in ["xbox:1234567890", "itch:some-game", "amazon:amzn1.adg.product.x"] {
+            let ref = try #require(GameRef(parsing: text))
+            #expect(ref.apiValue == text)
+        }
     }
 
     @Test("id-shaped text is an id, even though it is also slug-shaped")
@@ -57,12 +71,12 @@ struct DetectedGameTests {
         #expect(game.defaultRef == .store(.steam, id: "1145360"))
     }
 
-    @Test func appStoreGamesNeedAMapping() {
+    @Test func appStoreGamesUseTheirAppleID() {
         let game = DetectedGame(
             id: "com.dinopoloclub.minimotorways.macos",
             name: "Mini Motorways",
             source: .appStore(adamID: 1_456_188_526)
         )
-        #expect(game.defaultRef == nil)
+        #expect(game.defaultRef == .store(.apple, id: "1456188526"))
     }
 }

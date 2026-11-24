@@ -24,12 +24,7 @@ func listInstalledGames() {
     let games = InstalledGames.scan(appStore: appStore, steam: steam)
     log("Games this Mac has: \(games.count)")
     for game in games {
-        // `if case` pulls the associated value out of one enum case.
-        if case .appStore(let adamID) = game.source {
-            log("  \(game.name)  [App Store, apple:\(adamID)]  ->  needs mapping")
-        } else if let ref = game.defaultRef {
-            log("  \(game.name)  ->  \(ref)")
-        }
+        log("  \(game.name)  ->  \(game.defaultRef)")
     }
 }
 
@@ -55,7 +50,7 @@ func watch() {
                 let time = Date.now.formatted(date: .omitted, time: .standard)
                 switch gameEvent {
                 case .started(let game):
-                    log("[\(time)] started  \(game.name)  ->  \(game.defaultRef?.apiValue ?? "needs mapping")")
+                    log("[\(time)] started  \(game.name)  ->  \(game.defaultRef)")
                 case .stopped(let game):
                     log("[\(time)] stopped  \(game.name)")
                 }
