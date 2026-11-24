@@ -60,3 +60,10 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Swift Package Manager metadata and editor state
+.swiftpm/
+
+# App bundles built by scripts/bundle.sh
+/dist/
+*.app
