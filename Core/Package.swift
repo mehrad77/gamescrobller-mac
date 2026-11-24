@@ -9,16 +9,17 @@ let package = Package(
     // The oldest macOS the app runs on. MenuBarExtra and SMAppService need 13+;
     // the Observation framework (@Observable) needs 14.
     platforms: [.macOS(.v14)],
+    // *Products* are what other projects may use from this package. Targets
+    // alone are private: the Xcode app project can only link ScrobblerCore
+    // because it is listed here as a library.
+    products: [
+        .library(name: "ScrobblerCore", targets: ["ScrobblerCore"]),
+    ],
     targets: [
         // All the logic: game detection, the API client, the scrobbler.
-        // A library, so tests can import it without starting any UI.
+        // A library, so tests can import it without starting any UI. The menu
+        // bar app itself is the Xcode project in App/, which links this.
         .target(name: "ScrobblerCore"),
-
-        // The menu bar app itself: a thin SwiftUI layer over ScrobblerCore.
-        .executableTarget(
-            name: "GSScrobbler",
-            dependencies: ["ScrobblerCore"]
-        ),
 
         // A command-line debug tool: lists installed games, or prints games
         // as they start and stop (`swift run gs-detect --watch`).

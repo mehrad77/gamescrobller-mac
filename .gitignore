@@ -64,6 +64,8 @@ fastlane/test_output
 # Swift Package Manager metadata and editor state
 .swiftpm/
 
-# App bundles built by scripts/bundle.sh
-/dist/
+# Built app bundles (Xcode puts its own under .build/xcode, already ignored)
 *.app
+
+# macOS Finder metadata
+.DS_Store

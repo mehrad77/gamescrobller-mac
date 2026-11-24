@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The app's entry point. `@main` marks the type whose `main()` starts the
@@ -9,19 +8,13 @@ import SwiftUI
 ///     App  ->  Scene(s)  ->  View(s)
 ///
 /// Here the only scene is a `MenuBarExtra`: an icon in the menu bar with a
-/// menu. There is no window, so nothing appears in the Dock either.
+/// menu. There is no window, and the `LSUIElement` setting in the Xcode
+/// project ("Application is agent") keeps the app out of the Dock.
 @main
-struct GSScrobblerApp: App {
+struct GameScrobblerApp: App {
     /// `@State` makes SwiftUI own this object for the app's whole life: it is
     /// created once, and SwiftUI keeps it while it re-evaluates `body`.
     @State private var model = AppModel()
-
-    init() {
-        // An app normally gets a Dock icon. "Accessory" apps live only in the
-        // menu bar. Step 7's Info.plist (LSUIElement) will make this permanent;
-        // until then we set it in code so `swift run` behaves the same.
-        NSApplication.shared.setActivationPolicy(.accessory)
-    }
 
     /// `some Scene` is an *opaque type*: "some specific type that conforms to
     /// Scene, which the compiler knows and I don't have to spell out".

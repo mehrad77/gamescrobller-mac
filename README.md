@@ -13,27 +13,43 @@ Work in progress; this is also my first Swift project.
 ## Layout
 
 ```text
-Package.swift                  the SwiftPM manifest: targets and platforms
-Sources/
-  ScrobblerCore/               all logic (detection, API client, scrobbler), a library
-  GSScrobbler/                 the menu bar app, a thin UI over ScrobblerCore
-Tests/
-  ScrobblerCoreTests/          Swift Testing tests for ScrobblerCore
+App/                           the menu bar app (Xcode only)
+  GameScrobbler.xcodeproj      Xcode project; links ScrobblerCore from Core/
+  GameScrobbler/               the app's SwiftUI code
+Core/                          a Swift package (Xcode, or swift build/test in Terminal)
+  Package.swift                SwiftPM manifest for the core library and tools
+  Sources/
+    ScrobblerCore/             all logic (detection, API client, scrobbler), a library
+    gs-detect/                 command-line debug tool for the detection code
+  Tests/
+    ScrobblerCoreTests/        Swift Testing tests for ScrobblerCore
 ```
+
+The app is a thin SwiftUI shell; everything it does lives in `Core/`, so the
+logic builds and tests without Xcode or any UI.
 
 ## Build and run
 
-The Xcode Command Line Tools are enough; full Xcode is optional. If you don't have them yet:
+You need Xcode 27 or later (the project uses its text-based format; open Xcode once to finish its setup).
 
-```bash
-xcode-select --install
-```
+- **App:** open `App/GameScrobbler.xcodeproj` in Xcode and press Run (`Cmd+R`). The app lives in the menu bar (a game controller icon); it has no Dock icon or window.
+- **From the terminal:**
 
-```bash
-swift build              # compile everything
-swift run GSScrobbler    # run the app
-swift test               # run the tests
-```
+  ```bash
+  xcodebuild -project App/GameScrobbler.xcodeproj -scheme GameScrobbler -derivedDataPath .build/xcode build
+  ```
+
+  ```bash
+  open .build/xcode/Build/Products/Debug/GameScrobbler.app
+  ```
+
+- **Tests** (from the `Core/` folder):
+
+  ```bash
+  cd Core && swift test
+  ```
+
+- **Debug tool** (from `Core/`): `swift run gs-detect` lists the games the app recognises, and `swift run gs-detect --watch` prints games as they start and stop.
 
 ## License
 
