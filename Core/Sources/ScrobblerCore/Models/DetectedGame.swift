@@ -4,9 +4,13 @@
 /// never accidentally change the same game. Most Swift data types are structs;
 /// classes (reference types) are kept for things with identity and shared
 /// state, such as a long-lived service.
-public struct DetectedGame: Hashable, Identifiable, Sendable {
+///
+/// `Codable` (`Encodable` plus `Decodable`) lets it be saved in the play
+/// journal. Every stored property is itself `Codable`, so the compiler writes
+/// the code; the enum below becomes `{"steam": {"appID": 330020}}`.
+public struct DetectedGame: Codable, Hashable, Identifiable, Sendable {
     /// Where the game came from, with that launcher's own id for it.
-    public enum Source: Hashable, Sendable {
+    public enum Source: Codable, Hashable, Sendable {
         /// Mac App Store or Apple Arcade, keyed by the App Store ("Adam") id.
         case appStore(adamID: Int)
         /// Steam, keyed by the Steam app id.

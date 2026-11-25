@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ScrobblerCore
 
@@ -60,6 +61,22 @@ struct GameRefTests {
             // instead of carrying on with a meaningless comparison.
             let parsed = try #require(GameRef(parsing: ref.apiValue))
             #expect(parsed == ref)
+        }
+    }
+
+    @Test("goes into JSON as its text, and comes back")
+    func jsonRoundTrip() throws {
+        let refs: [GameRef] = [.gameID("g_7k2m9q4xzt"), .slug("mini-motorways"), .store(.apple, id: "1456188526")]
+        let data = try JSONEncoder().encode(refs)
+        #expect(String(decoding: data, as: UTF8.self) == #"["g_7k2m9q4xzt","mini-motorways","apple:1456188526"]"#)
+        #expect(try JSONDecoder().decode([GameRef].self, from: data) == refs)
+    }
+
+    @Test("a damaged reference in JSON is an error")
+    func damagedJSON() {
+        // `#expect(throws:)` passes only if the closure throws that error type.
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode([GameRef].self, from: Data(#"["steam:"]"#.utf8))
         }
     }
 }

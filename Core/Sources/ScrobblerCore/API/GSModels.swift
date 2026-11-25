@@ -87,14 +87,29 @@ struct FinishSessionBody: Encodable {
     var endedAt: Date?
 }
 
-/// A `GameRef` goes into JSON as the API's text form, such as `"steam:570"`.
+/// A `GameRef` goes into JSON as the API's text form, such as `"steam:570"`,
+/// both in request bodies and in the play journal.
 ///
-/// Writing `encode(to:)` by hand replaces what the compiler would generate.
-/// A *single value container* holds one plain value instead of an object.
-extension GameRef: Encodable {
+/// Writing `encode(to:)` and `init(from:)` by hand replaces what the compiler
+/// would generate. A *single value container* holds one plain value instead
+/// of an object.
+extension GameRef: Codable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(apiValue)
+    }
+
+    /// Reading goes through the same parser as typed text, so a damaged
+    /// value in a saved file is an error, never a wrong game.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let text = try container.decode(String.self)
+        guard let ref = GameRef(parsing: text) else {
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "Not a game reference: \(text)"
+            )
+        }
+        self = ref
     }
 }
 
