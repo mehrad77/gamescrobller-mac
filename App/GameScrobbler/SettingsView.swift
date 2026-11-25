@@ -40,6 +40,12 @@ struct GeneralSettingsView: View {
     /// window is open; it is never saved anywhere but the Keychain.
     @State private var tokenDraft = ""
 
+    /// Whether the app opens at login. macOS keeps this, not the app, and
+    /// does not announce changes, so it is read when the tab appears and
+    /// after each change.
+    @State private var loginItem = LoginItem.state
+    @State private var loginItemError: String?
+
     var body: some View {
         Form {
             if let profile = model.profile {
@@ -95,6 +101,28 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Startup") {
+                Toggle("Open at Login", isOn: Binding(
+                    get: { loginItem != .off },
+                    set: { setOpensAtLogin($0) }
+                ))
+                if loginItem == .needsApproval {
+                    HStack {
+                        Text("Allow GameScrobbler in System Settings to open it at login.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open Login Items…") { LoginItem.openSystemSettings() }
+                    }
+                }
+                if let loginItemError {
+                    Text(loginItemError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .onAppear { loginItem = LoginItem.state }
+
             Section("Server") {
                 // `$baseURL` is the wrapper's *projected value*: a `Binding`,
                 // a two-way link that lets the text field change the setting.
@@ -106,6 +134,16 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 480)
+    }
+
+    private func setOpensAtLogin(_ on: Bool) {
+        do {
+            try LoginItem.set(on)
+            loginItemError = nil
+        } catch {
+            loginItemError = "macOS refused: \(error.localizedDescription)"
+        }
+        loginItem = LoginItem.state
     }
 
     /// Whether GameScrobbler takes plays now, from the last check.
