@@ -1,3 +1,5 @@
+![GameScrobbler for Mac: the Games tab of Settings, showing which of the games on this Mac are in your GameScrobbler library](docs/banner.png)
+
 # GameScrobbler for Mac
 
 A macOS menu bar app that notices when you play a game on your Mac and
