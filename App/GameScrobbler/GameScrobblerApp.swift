@@ -10,8 +10,10 @@ import UserNotifications
 ///     App  ->  Scene(s)  ->  View(s)
 ///
 /// There are two scenes: a `MenuBarExtra` (an icon in the menu bar with a
-/// menu) and `Settings`, the window ⌘, opens. The `LSUIElement` setting in
-/// the Xcode project ("Application is agent") keeps the app out of the Dock.
+/// menu) and a `Window`, the app's one window, which ⌘, and "Settings…"
+/// open. The `LSUIElement` setting in the Xcode project ("Application is
+/// agent") keeps the app out of the Dock, except while the window is open
+/// (`DockIcon`).
 @main
 struct GameScrobblerApp: App {
     /// SwiftUI has no "the app is about to quit" hook, but AppKit does, on
@@ -24,19 +26,57 @@ struct GameScrobblerApp: App {
     /// where the model is stored.
     private var model: AppModel { appDelegate.model }
 
+    /// The "Show in Menu Bar" setting, in General.
+    @AppStorage(AppSettings.showsMenuBarIconKey) private var showsMenuBarIcon = true
+
     /// `some Scene` is an *opaque type*: "some specific type that conforms to
     /// Scene, which the compiler knows and I don't have to spell out".
     var body: some Scene {
-        MenuBarExtra {
+        // `isInserted` adds or removes the icon as the setting changes.
+        MenuBarExtra(isInserted: $showsMenuBarIcon) {
             MenuContent(model: model)
         } label: {
             MenuBarIcon(model: model)
         }
 
         // Both scenes get the same `model`, so they share one state.
-        Settings {
+        //
+        // A `Window`, not a `Settings` scene: a Settings window has a fixed
+        // size, and this one is the whole app while the menu bar icon is
+        // hidden. A `Window` is a single window (a `WindowGroup` could open
+        // several), opened by its `id`.
+        Window("GameScrobbler", id: AppWindow.id) {
             SettingsView(model: model)
         }
+        .defaultSize(width: 660, height: 760)
+        // Any size from the tabs' smallest one up (`settingsPane`).
+        .windowResizability(.contentMinSize)
+        .commands {
+            // The app menu's "Settings…" (⌘,) opens this window.
+            CommandGroup(replacing: .appSettings) {
+                OpenWindowButton(model: model)
+            }
+        }
+    }
+}
+
+/// The app's window.
+enum AppWindow {
+    static let id = "main"
+}
+
+/// "Settings…" in the app menu, with ⌘,. A view of its own, because only
+/// a view can read the `openWindow` action.
+private struct OpenWindowButton: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Settings…") { openWindow(id: AppWindow.id) }
+            .keyboardShortcut(",")
+            // The menu exists from launch, even with the menu bar icon
+            // hidden, so it hands the model the action too.
+            .onAppear { model.openAppWindow = { openWindow(id: AppWindow.id) } }
     }
 }
 
@@ -45,16 +85,16 @@ struct GameScrobblerApp: App {
 /// for your answer. These are images from `Assets.xcassets`, drawn as
 /// *templates*, so macOS colours them to match the menu bar.
 ///
-/// It is always on screen, so it also hands the model SwiftUI's "open
-/// Settings" action: only a view can read it, and a click on a
-/// notification needs it.
+/// It is on screen from launch (unless you hid it), so it also hands the
+/// model SwiftUI's "open window" action: only a view can read it, and a
+/// click on a notification needs it.
 private struct MenuBarIcon: View {
     let model: AppModel
-    @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Image(menuBarImage)
-            .onAppear { model.openSettingsWindow = { openSettings() } }
+            .onAppear { model.openAppWindow = { openWindow(id: AppWindow.id) } }
     }
 
     private var menuBarImage: String {
@@ -70,11 +110,44 @@ private struct MenuBarIcon: View {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let model = AppModel()
+    private let dockIcon = DockIcon()
+
+    /// Whether macOS opened the app at login, read while launching (see
+    /// `applicationWillFinishLaunching`).
+    private var launchedAtLogin = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // The Apple event that opened the app says whether it was a login
+        // item. It is only "current" while the app is starting up.
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        launchedAtLogin = event?.eventID == kAEOpenApplication
+            && event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The notification center asks this object what to do with the
         // buttons on our notifications.
         UNUserNotificationCenter.current().delegate = self
+        dockIcon.start()
+
+        // With the menu bar icon hidden, opening the app shows the window,
+        // or nothing would show it opened. Not at login: then it starts
+        // quietly, as with the icon.
+        let showsIcon = UserDefaults.standard.object(forKey: AppSettings.showsMenuBarIconKey) as? Bool ?? true
+        if !showsIcon, !launchedAtLogin {
+            // A `Task` runs after launch finishes, once SwiftUI has set up
+            // the app menu that `showWindow` may use.
+            Task { model.showWindow(.nowPlaying) }
+        }
+    }
+
+    /// The app was opened again while running (from Finder, Spotlight, or
+    /// the Dock): show the window, the way any Mac app does.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            model.showWindow(.nowPlaying)
+        }
+        return true
     }
 
     // MARK: - Notifications

@@ -88,8 +88,17 @@ enum AppSettings {
         baseURL.flatMap(website(for:))?.appending(path: "dashboard/hub")
     }
 
+    /// The page in your Hub settings where personal access tokens are made
+    /// (Settings > Developer > Tokens).
+    static var tokensURL: URL? {
+        hubURL?.appending(path: "settings/developer/tokens")
+    }
+
     /// The Settings tab to show, so the menu can open the Games tab.
     static let settingsTabKey = "settingsTab"
+
+    /// Whether the icon is in the menu bar (on unless you turn it off).
+    static let showsMenuBarIconKey = "showsMenuBarIcon"
 
     /// The `deviceId` of the server check (`GSClient.checkServer`): one no
     /// session ever uses, so the check stops nothing.

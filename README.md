@@ -28,10 +28,30 @@ Needs macOS 14 Sonoma or later, on Apple silicon or Intel.
      xattr -dr com.apple.quarantine /Applications/GameScrobbler.app
      ```
 
-3. Click the GameScrobbler icon in the menu bar and open **Settings…**. Paste a
-   personal access token, created on gamescrobbler.com in your developer
-   settings with the `activity:write` and `library:write` scopes.
+3. Click the GameScrobbler icon in the menu bar and open **Settings…** (or
+   press ⌘,). In **General**, paste a personal access token, created in your
+   GameScrobbler
+   [developer settings](https://gamescrobbler.com/dashboard/hub/settings/developer/tokens)
+   with the `activity:write` and `library:write` scopes. The **Create a Token**
+   link under the token field opens that page. Once the token works, the
+   same place shows your account.
 4. Turn on **Send plays to GameScrobbler**.
+
+## Using it
+
+The window has three tabs:
+
+- **Now Playing:** the game you're playing, whether plays are being sent,
+  pausing and resuming, and games that need your answer. It's the same as the
+  menu bar menu.
+- **Games:** every game on this Mac, whether it is in your GameScrobbler
+  library, and a switch to stop scrobbling one.
+- **General:** your account and token, the connection, Open at Login, and
+  **Show in Menu Bar**.
+
+The app shows in the Dock while its window is open. If you turn off **Show in
+Menu Bar**, open GameScrobbler again from Applications, Spotlight or the Dock
+to get the window back.
 
 ## Layout
 
@@ -55,7 +75,7 @@ logic builds and tests without Xcode or any UI.
 
 You need Xcode 27 or later (the project uses its text-based format; open Xcode once to finish its setup).
 
-- **App:** open `App/GameScrobbler.xcodeproj` in Xcode and press Run (`Cmd+R`). The app lives in the menu bar (a game controller icon); it has no Dock icon or window.
+- **App:** open `App/GameScrobbler.xcodeproj` in Xcode and press Run (`Cmd+R`). The app lives in the menu bar (the GameScrobbler tick); it shows in the Dock only while its window is open.
 - **From the terminal:**
 
   ```bash

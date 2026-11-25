@@ -75,17 +75,23 @@ final class AppModel {
     /// Your avatar, once `GET /me` answered, for the menu and Settings.
     private(set) var avatar: NSImage?
 
-    /// Who the token belongs to, once the server said so.
-    var profile: GSProfile? {
-        if case .connected(let profile) = connection { return profile }
-        return nil
-    }
+    /// Who the saved token belongs to, as the server last said. Kept while
+    /// a check runs and while the server can't be reached, so the account
+    /// doesn't vanish each time; cleared when the token changes or the
+    /// server refuses it.
+    private(set) var profile: GSProfile?
+    /// Whether the server refused the saved token at the last check (401
+    /// or 403): it is wrong, expired or revoked, so you need a new one.
+    private(set) var tokenRefused = false
+    /// The connection check in flight, so a newer one can cancel it.
+    @ObservationIgnored private var connectionCheck: Task<Void, Never>?
 
     /// The game selected in Settings, so the menu can open it there.
     var selectedGameID: String?
-    /// Opens the Settings window; set by the menu bar icon (see
-    /// `MenuBarIcon`).
-    @ObservationIgnored var openSettingsWindow: (() -> Void)?
+    /// Opens the app's window; set by the views that can read SwiftUI's
+    /// `openWindow` action (`MenuBarIcon`, `OpenWindowButton`), so it may
+    /// be nil early on, or while the menu bar icon is hidden.
+    @ObservationIgnored var openAppWindow: (() -> Void)?
 
     // Not part of the UI state, so they need not be observed.
     @ObservationIgnored private let monitor = ProcessMonitor()
@@ -395,11 +401,36 @@ final class AppModel {
     /// Opens Settings on the Games tab, with `game` selected.
     func showInSettings(_ game: DetectedGame? = nil) {
         if let game { selectedGameID = game.id }
-        UserDefaults.standard.set(SettingsTab.games.rawValue, forKey: AppSettings.settingsTabKey)
+        showWindow(.games)
+    }
+
+    /// Opens the window on `tab`, or on the tab you last used.
+    func showWindow(_ tab: SettingsTab? = nil) {
+        if let tab {
+            UserDefaults.standard.set(tab.rawValue, forKey: AppSettings.settingsTabKey)
+        }
+        // Into the Dock first: a switch made after activating may leave the
+        // menu bar showing the previous app's menus.
+        DockIcon.show()
         // A menu bar app is never the active app on its own, so the window
         // would open behind other windows without this.
         NSApplication.shared.activate()
-        openSettingsWindow?()
+        if let openAppWindow {
+            openAppWindow()
+        } else {
+            Self.openWindowFromMainMenu()
+        }
+    }
+
+    /// Opens the window without SwiftUI's `openWindow` action, which only a
+    /// view can read: with the menu bar icon hidden, no view of the app may
+    /// exist yet. It presses the app menu's "Settings…" item (the one with
+    /// ⌘,), as choosing it there would.
+    private static func openWindowFromMainMenu() {
+        guard let appMenu = NSApplication.shared.mainMenu?.items.first?.submenu,
+              let index = appMenu.items.firstIndex(where: { $0.keyEquivalent == "," })
+        else { return }
+        appMenu.performActionForItem(at: index)
     }
 
     /// Whether the menu and the notification may offer "Add to Library".
@@ -574,30 +605,46 @@ final class AppModel {
     // MARK: - Settings
 
     /// Saves a pasted token to the Keychain, then checks it against the server.
-    func saveToken(_ text: String) {
+    /// Returns whether it was saved. `@discardableResult`: a caller may
+    /// ignore the answer without a warning.
+    @discardableResult
+    func saveToken(_ text: String) -> Bool {
         let token = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !token.isEmpty else { return }
+        guard !token.isEmpty else { return false }
         do {
             try tokenStore.save(token)
-            hasToken = true
-            scrobbleInput.yield(.rebuild)
-            checkConnection()
         } catch {
+            // The old token, if any, is still saved and still in use.
             connection = .failed("Could not save the token: \(error)")
+            return false
         }
+        hasToken = true
+        forgetAccount()
+        scrobbleInput.yield(.rebuild)
+        checkConnection()
+        return true
     }
 
     func removeToken() {
         do {
             try tokenStore.delete()
-            hasToken = false
-            connection = .notChecked
-            serverStatus = nil
-            avatar = nil
-            scrobbleInput.yield(.rebuild)
         } catch {
             connection = .failed("Could not remove the token: \(error)")
+            return
         }
+        hasToken = false
+        connectionCheck?.cancel()
+        connection = .notChecked
+        forgetAccount()
+        scrobbleInput.yield(.rebuild)
+    }
+
+    /// Drops what the last token told us: its account and server status.
+    private func forgetAccount() {
+        profile = nil
+        avatar = nil
+        tokenRefused = false
+        serverStatus = nil
     }
 
     /// Calls `GET /me` with the saved token and shows who it belongs to.
@@ -620,21 +667,35 @@ final class AppModel {
 
         connection = .checking
         let client = GSClient(baseURL: baseURL, token: token)
+        // Only the newest check may change what is shown: an older one, for
+        // a token since replaced, could otherwise answer last.
+        connectionCheck?.cancel()
         // This `Task` runs on the main actor, like the rest of the model, but
         // `await` lets the main thread do other work while the request is out.
-        Task {
+        connectionCheck = Task {
             // `do throws(GSClientError)` states the error type, so `error` in
             // `catch` is a `GSClientError` and has `summary`. Without it, a
             // `do` inside a closure gives a plain `any Error`.
             do throws(GSClientError) {
                 let profile = try await client.me()
+                guard !Task.isCancelled else { return }
                 connection = .connected(profile)
+                self.profile = profile
+                tokenRefused = false
                 serverStatus = await client.checkServer(probeDeviceID: AppSettings.statusProbeDeviceID)
                 await loadAvatar(of: profile)
                 await lookUpGames(with: client)
             } catch {
+                guard !Task.isCancelled else { return }
                 connection = .failed(error.summary)
                 serverStatus = nil
+                // Only a refusal says the token is bad. Offline, or a server
+                // in trouble, says nothing about it: the account stays.
+                if case .api(let api) = error, api.status == 401 || api.status == 403 {
+                    tokenRefused = true
+                    profile = nil
+                    avatar = nil
+                }
             }
         }
     }

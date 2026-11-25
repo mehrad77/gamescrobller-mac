@@ -23,7 +23,7 @@ struct GamesSettingsView: View {
                     .frame(height: 250)
             }
         }
-        .frame(width: 640, height: 600)
+        .settingsPane(minWidth: 600)
     }
 
     /// A `Table` lays rows out in columns, like Finder's list view. Each
