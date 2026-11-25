@@ -335,6 +335,106 @@ final class ScrobblerTests {
         #expect(calls.count == 4)  // nothing resumes after stopAll
     }
 
+    // MARK: - Sleep
+
+    @Test func sleepEndsThePlayAndTheWakeStartsANewOne() async {
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.sleep(at: minutes(30)))
+        // Ticks while asleep send no heartbeat: there is no open play.
+        await scrobbler.handle(.tick(minutes(35)))
+        await scrobbler.handle(.tick(minutes(90)))
+        await scrobbler.handle(.wake(at: minutes(600)))
+        await scrobbler.handle(.stopped(motorways, at: minutes(630)))
+
+        #expect(await api.calls == [
+            .start(game: "apple:1456188526", startedAt: t0),
+            .finish("s1", endedAt: minutes(30)),
+            .start(game: "apple:1456188526", startedAt: minutes(600)),
+            .finish("s2", endedAt: minutes(630)),
+        ])
+    }
+
+    @Test func theWakeResumesTheNewestGame() async {
+        await scrobbler.handle(.started(morta, at: t0))
+        await scrobbler.handle(.started(motorways, at: minutes(10)))
+        await scrobbler.handle(.sleep(at: minutes(20)))
+        await scrobbler.handle(.wake(at: minutes(100)))
+
+        #expect(await api.calls.last == .start(game: "apple:1456188526", startedAt: minutes(100)))
+        #expect(await scrobbler.status == .scrobbling(motorways, since: minutes(100)))
+    }
+
+    @Test func aGameThatQuitWhileAsleepIsNotResumed() async {
+        await scrobbler.handle(.started(morta, at: t0))
+        await scrobbler.handle(.started(motorways, at: minutes(10)))
+        await scrobbler.handle(.sleep(at: minutes(20)))
+        await scrobbler.handle(.stopped(motorways, at: minutes(21)))
+        await scrobbler.handle(.wake(at: minutes(100)))
+
+        // Motorways' play already ended at the sleep: no second finish. The
+        // older game is the one still running, so it gets the new play.
+        #expect(await api.calls == [
+            .start(game: "steam:330020", startedAt: t0),
+            .finish("s1", endedAt: minutes(10)),
+            .start(game: "apple:1456188526", startedAt: minutes(10)),
+            .finish("s2", endedAt: minutes(20)),
+            .start(game: "steam:330020", startedAt: minutes(100)),
+        ])
+    }
+
+    @Test func aGameStartedWhileAsleepWaitsForTheWake() async {
+        await scrobbler.handle(.sleep(at: t0))
+        await scrobbler.handle(.started(motorways, at: minutes(1)))
+        #expect(await api.calls.isEmpty)
+
+        await scrobbler.handle(.wake(at: minutes(5)))
+        #expect(await api.calls == [.start(game: "apple:1456188526", startedAt: minutes(5))])
+    }
+
+    @Test func aFinishCutOffBySleepIsSentAfterTheWake() async {
+        await scrobbler.handle(.started(motorways, at: t0))
+        // The network goes down as the Mac falls asleep.
+        await api.failNextFinish(with: offline)
+        await scrobbler.handle(.sleep(at: minutes(30)))
+        // A short sleep: the server still has the session open.
+        await scrobbler.handle(.wake(at: minutes(40)))
+
+        // Oldest first: the old play's finish, then the new play's start.
+        #expect(await api.calls == [
+            .start(game: "apple:1456188526", startedAt: t0),
+            .finish("s1", endedAt: minutes(30)),
+            .finish("s1", endedAt: minutes(30)),
+            .start(game: "apple:1456188526", startedAt: minutes(40)),
+        ])
+        #expect(await api.sessions.first?.endedAt == minutes(30))
+    }
+
+    /// **Known loss:** after a sleep longer than 45 minutes the server has
+    /// already closed the session at its last heartbeat, so the minutes
+    /// between that heartbeat and the sleep (up to 5) are lost.
+    @Test func aFinishCutOffByALongSleepCountsAsDone() async {
+        await scrobbler.handle(.started(motorways, at: t0))
+        await api.failNextFinish(with: offline)
+        await scrobbler.handle(.sleep(at: minutes(30)))
+        await api.closeQuietSessions()  // 45 silent minutes pass
+        await scrobbler.handle(.wake(at: minutes(600)))
+
+        #expect(await api.calls.suffix(2) == [
+            .finish("s1", endedAt: minutes(30)),  // answered 409: done
+            .start(game: "apple:1456188526", startedAt: minutes(600)),
+        ])
+        #expect(await scrobbler.unsentCount == 0)
+        #expect(await scrobbler.status == .scrobbling(motorways, since: minutes(600)))
+    }
+
+    @Test func aWakeWithoutASleepChangesNothing() async {
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.wake(at: minutes(2)))
+
+        #expect(await api.calls.count == 1)
+        #expect(await scrobbler.status == .scrobbling(motorways, since: t0))
+    }
+
     // MARK: - Retries
 
     @Test func aStartIsRetriedWithTheSameKeyAndBody() async {

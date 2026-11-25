@@ -26,10 +26,16 @@ public enum ScrobbleEvent: Sendable, Equatable {
     /// End the open play and forget every game (scrobbling turned off, the
     /// token changed, or the app is quitting).
     case stopAll(at: Date)
+    /// The Mac is going to sleep: the open play ends now, since a closed lid
+    /// is not playtime. The running games are kept, for the wake.
+    case sleep(at: Date)
+    /// The Mac woke up: the newest game still running gets a new play.
+    case wake(at: Date)
 
     var time: Date {
         switch self {
-        case .started(_, let time), .stopped(_, let time), .tick(let time), .stopAll(let time):
+        case .started(_, let time), .stopped(_, let time), .tick(let time),
+             .stopAll(let time), .sleep(let time), .wake(let time):
             time
         }
     }
@@ -67,6 +73,8 @@ public enum ScrobbleStatus: Sendable, Equatable {
 /// - A heartbeat every `heartbeatInterval` (5 minutes) keeps the open session
 ///   open. A heartbeat answered 409 or 404 means the server already closed
 ///   it (45 silent minutes, or the 24-hour limit): a new play begins.
+/// - Sleep ends the open play; the wake begins a new one for the newest game
+///   still running. Nothing is scrobbled while the Mac sleeps.
 ///
 /// API docs: https://developers.gamescrobbler.com/guides/recording-play/#the-full-path-sessions
 ///
@@ -92,6 +100,9 @@ public actor Scrobbler {
 
     /// Running games, oldest first. The last one is the one being scrobbled.
     private var games: [DetectedGame] = []
+    /// Between `.sleep` and `.wake`: games are still tracked, but no play
+    /// begins.
+    private var asleep = false
     /// The plays not yet fully sent, oldest first: what the journal file
     /// holds. At most one has no `endedAt`, the last: the newest game's play.
     private var plays: [Play]
@@ -177,6 +188,11 @@ public actor Scrobbler {
         case .stopAll(let time):
             games.removeAll()
             endOpenPlay(at: time)
+        case .sleep(let time):
+            asleep = true
+            endOpenPlay(at: time)
+        case .wake(let time):
+            wokeUp(at: time)
         }
         plays.removeAll { Self.isTooOld($0, at: event.time) }
         save()
@@ -192,6 +208,8 @@ public actor Scrobbler {
     private func gameStarted(_ game: DetectedGame, at time: Date) {
         guard !games.contains(where: { $0.id == game.id }) else { return }
         games.append(game)
+        // Asleep, there is no play to end, and the new one waits for the wake.
+        guard !asleep else { return }
         // Newest wins: the older game's play ends, and this one's begins.
         endOpenPlay(at: time)
         beginPlay(of: game, at: time)
@@ -201,13 +219,24 @@ public actor Scrobbler {
         guard let index = games.firstIndex(where: { $0.id == game.id }) else { return }
         let wasNewest = index == games.count - 1
         games.remove(at: index)
-        // An older game quitting changes nothing on the server.
-        guard wasNewest else { return }
+        // An older game quitting changes nothing on the server, and neither
+        // does any game quitting while the Mac sleeps: its play already ended.
+        guard wasNewest, !asleep else { return }
 
         endOpenPlay(at: time)
         // The game that was running before this one takes over.
         if let next = games.last {
             beginPlay(of: next, at: time)
+        }
+    }
+
+    /// A wake without a sleep before it changes nothing: the play that is
+    /// open stays open.
+    private func wokeUp(at time: Date) {
+        guard asleep else { return }
+        asleep = false
+        if let newest = games.last {
+            beginPlay(of: newest, at: time)
         }
     }
 
