@@ -43,6 +43,7 @@ struct MenuContent: View {
             if model.serverStatus == .playsTurnedOff {
                 Text("GameScrobbler isn’t taking plays right now; they are kept")
             }
+            pauseControls
             if model.unsentCount > 0 {
                 // `^[…](inflect: true)` is *automatic grammar agreement*:
                 // Foundation writes "1 play" or "2 plays" to match the number.
@@ -79,6 +80,36 @@ struct MenuContent: View {
 }
 
 extension MenuContent {
+    /// "Pause Scrobbling" with how long, or "Resume Scrobbling" while
+    /// paused. Only when scrobbling could run at all.
+    @ViewBuilder
+    private var pauseControls: some View {
+        if model.isPaused {
+            Button("Resume Scrobbling") { model.resume() }
+        } else if model.scrobblingEnabled, model.hasToken {
+            Menu("Pause Scrobbling") {
+                Button("For an Hour") { model.pause(.oneHour) }
+                Button("Until Tomorrow") { model.pause(.untilTomorrow) }
+                Button("Until I Resume") { model.pause(.untilResumed) }
+            }
+        }
+    }
+
+    /// "Paused until 18:30", "Paused until tomorrow", "Paused until
+    /// tomorrow at 00:30", or "Paused" (until you resume).
+    private static func pausedLine(until: Date) -> String {
+        // "Until I resume" is saved as `Date.distantFuture`. A date read back
+        // from preferences may differ from it in the last digits, so any end
+        // more than two days away counts as "until you resume".
+        if until.timeIntervalSinceNow > 2 * 24 * 60 * 60 { return "Paused" }
+        let calendar = Calendar.current
+        let time = until.formatted(date: .omitted, time: .shortened)
+        if calendar.isDateInToday(until) { return "Paused until \(time)" }
+        // "Until Tomorrow" ends at midnight tonight, the start of tomorrow.
+        if until == calendar.startOfDay(for: until) { return "Paused until tomorrow" }
+        return "Paused until tomorrow at \(time)"
+    }
+
     /// Who is signed in, with the avatar, and the way to your Hub.
     @ViewBuilder
     private var account: some View {
@@ -133,6 +164,7 @@ extension MenuContent {
     private var scrobbleLine: String {
         if !model.scrobblingEnabled { return "Scrobbling is off (turn it on in Settings)" }
         if !model.hasToken { return "Add a token in Settings to scrobble" }
+        if model.isPaused, let until = model.pausedUntil { return Self.pausedLine(until: until) }
         switch model.scrobbleStatus {
         case nil, .idle?:
             return "Ready to scrobble"

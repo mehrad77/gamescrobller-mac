@@ -52,6 +52,8 @@ final class AppModel {
     private(set) var hasToken = false
     private(set) var connection: Connection = .notChecked
     private(set) var scrobblingEnabled = AppSettings.scrobblingEnabled
+    /// When the pause you chose in the menu ends; nil when not paused.
+    private(set) var pausedUntil = AppSettings.pausedUntil
     /// Whether the server takes plays, from the last connection check.
     private(set) var serverStatus: ServerStatus?
     /// nil until a scrobbler exists (scrobbling off, no token, or no game
@@ -137,10 +139,12 @@ final class AppModel {
         tasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
+                self?.endPauseIfOver()
                 self?.scrobbleInput.yield(.event(.tick(.now)))
             }
         })
         watchSleep()
+        endPauseIfOver()
         // Who you are, for the menu: one read of `GET /me` per launch.
         if hasToken { checkConnection() }
     }
@@ -188,6 +192,33 @@ final class AppModel {
     }
 
     // MARK: - Scrobbling
+
+    /// Whether a pause is on now.
+    var isPaused: Bool {
+        pausedUntil.map { $0 > .now } ?? false
+    }
+
+    /// Pauses scrobbling: the open play ends now, and nothing is sent until
+    /// the pause ends. Plays already saved wait in the journal.
+    func pause(_ length: PauseLength) {
+        let until = length.end(from: .now) ?? .distantFuture
+        pausedUntil = until
+        AppSettings.pausedUntil = until
+        scrobbleInput.yield(.rebuild)
+    }
+
+    /// Ends the pause: the games running now get new plays from now.
+    func resume() {
+        guard pausedUntil != nil else { return }
+        pausedUntil = nil
+        AppSettings.pausedUntil = nil
+        scrobbleInput.yield(.rebuild)
+    }
+
+    /// Checked at launch and every minute, so a pause ends on its own.
+    private func endPauseIfOver() {
+        if let until = pausedUntil, until <= .now { resume() }
+    }
 
     func setScrobblingEnabled(_ enabled: Bool) {
         guard enabled != scrobblingEnabled else { return }
@@ -267,7 +298,7 @@ final class AppModel {
 
     private func makeScrobblerIfNeeded() -> Scrobbler? {
         if let scrobbler { return scrobbler }
-        guard scrobblingEnabled, hasToken,
+        guard scrobblingEnabled, hasToken, !isPaused,
               let baseURL = AppSettings.baseURL,
               let journal = AppSettings.journal(for: baseURL),
               let token = try? tokenStore.token()
@@ -285,7 +316,7 @@ final class AppModel {
     /// Whether the current server's journal holds plays. Read from the file
     /// on every tick while there is no scrobbler: it is small.
     private func journalHasPlays() -> Bool {
-        guard scrobblingEnabled, hasToken,
+        guard scrobblingEnabled, hasToken, !isPaused,
               let baseURL = AppSettings.baseURL,
               let journal = AppSettings.journal(for: baseURL)
         else { return false }

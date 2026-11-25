@@ -59,6 +59,8 @@ private struct MenuBarIcon: View {
 
     private var menuBarImage: String {
         if !model.refusedGames.isEmpty { return "MenuBarAttention" }
+        // Paused, a running game is not being scrobbled: the idle ring.
+        if model.isPaused { return "MenuBarIdle" }
         return model.running.isEmpty ? "MenuBarIdle" : "MenuBarPlaying"
     }
 }

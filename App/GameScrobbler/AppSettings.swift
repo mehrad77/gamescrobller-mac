@@ -31,6 +31,23 @@ enum AppSettings {
         set { UserDefaults.standard.set(newValue, forKey: "scrobblingEnabled") }
     }
 
+    /// When the pause you chose in the menu ends: nil when not paused, and
+    /// `Date.distantFuture` for "until I resume". Saved as seconds since
+    /// 1970, so a pause survives a relaunch.
+    static var pausedUntil: Date? {
+        get {
+            let seconds = UserDefaults.standard.double(forKey: "pausedUntil")
+            return seconds == 0 ? nil : Date(timeIntervalSince1970: seconds)
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue.timeIntervalSince1970, forKey: "pausedUntil")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "pausedUntil")
+            }
+        }
+    }
+
     /// The journal of plays for the server at `baseURL`, in
     /// `~/Library/Application Support/<bundle id>/`, the folder macOS gives
     /// each app for files it keeps for itself. nil only if macOS has no such
