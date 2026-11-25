@@ -68,6 +68,15 @@ final class AppModel {
     /// Games added to the library on this run. If the server still refuses
     /// one, asking "Add it?" again would go round in circles.
     private(set) var addedThisRun: Set<String> = []
+    /// Your avatar, once `GET /me` answered, for the menu and Settings.
+    private(set) var avatar: NSImage?
+
+    /// Who the token belongs to, once the server said so.
+    var profile: GSProfile? {
+        if case .connected(let profile) = connection { return profile }
+        return nil
+    }
+
     /// The game selected in Settings, so the menu can open it there.
     var selectedGameID: String?
     /// Opens the Settings window; set by the menu bar icon (see
@@ -130,8 +139,7 @@ final class AppModel {
             }
         })
         watchSleep()
-        // Check the token and look the games up in your library: reads only,
-        // once per launch.
+        // Who you are, for the menu: one read of `GET /me` per launch.
         if hasToken { checkConnection() }
     }
 
@@ -482,6 +490,26 @@ final class AppModel {
         return GSClient(baseURL: baseURL, token: token)
     }
 
+    // MARK: - Your account
+
+    /// Opens your GameScrobbler Hub in the browser.
+    func openHub() {
+        guard let url = AppSettings.hubURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Downloads the avatar once. A missing or broken one leaves the
+    /// placeholder: it is decoration, never worth an error.
+    private func loadAvatar(of profile: GSProfile) async {
+        guard let text = profile.avatarUrl, let url = URL(string: text),
+              let (data, _) = try? await URLSession.shared.data(from: url)
+        else {
+            avatar = nil
+            return
+        }
+        avatar = NSImage(data: data)
+    }
+
     // MARK: - Settings
 
     /// Saves a pasted token to the Keychain, then checks it against the server.
@@ -503,6 +531,7 @@ final class AppModel {
             try tokenStore.delete()
             hasToken = false
             connection = .notChecked
+            avatar = nil
             scrobbleInput.yield(.rebuild)
         } catch {
             connection = .failed("Could not remove the token: \(error)")
@@ -538,6 +567,7 @@ final class AppModel {
             do throws(GSClientError) {
                 let profile = try await client.me()
                 connection = .connected(profile)
+                await loadAvatar(of: profile)
                 await lookUpGames(with: client)
             } catch {
                 connection = .failed(error.summary)

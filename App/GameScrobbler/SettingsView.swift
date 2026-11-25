@@ -42,27 +42,10 @@ struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Scrobbling") {
-                // A `Toggle` needs a `Binding<Bool>`. This one is built by
-                // hand from a getter and a setter, so turning it on or off
-                // goes through the model (which also restarts the scrobbler)
-                // instead of just flipping a stored value.
-                Toggle("Send plays to GameScrobbler", isOn: Binding(
-                    get: { model.scrobblingEnabled },
-                    set: { model.setScrobblingEnabled($0) }
-                ))
-                Text("This Mac is \(AppSettings.deviceID) to GameScrobbler.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Server") {
-                // `$baseURL` is the wrapper's *projected value*: a `Binding`,
-                // a two-way link that lets the text field change the setting.
-                TextField("API address", text: $baseURL)
-                Text("Production: \(GSClient.productionBaseURL.absoluteString). A local stack: http://localhost:8000/v1.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if let profile = model.profile {
+                Section("Account") {
+                    AccountCard(profile: profile, avatar: model.avatar, openHub: model.openHub)
+                }
             }
 
             Section("Personal access token") {
@@ -90,9 +73,32 @@ struct GeneralSettingsView: View {
                 HStack {
                     connectionStatus
                     Spacer()
-                    Button("Check connection") { model.checkConnection() }
+                    Button("Check Connection") { model.checkConnection() }
                         .disabled(!model.hasToken)
                 }
+            }
+
+            Section("Scrobbling") {
+                // A `Toggle` needs a `Binding<Bool>`. This one is built by
+                // hand from a getter and a setter, so turning it on or off
+                // goes through the model (which also restarts the scrobbler)
+                // instead of just flipping a stored value.
+                Toggle("Send plays to GameScrobbler", isOn: Binding(
+                    get: { model.scrobblingEnabled },
+                    set: { model.setScrobblingEnabled($0) }
+                ))
+                Text("This Mac is \(AppSettings.deviceID) to GameScrobbler.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Server") {
+                // `$baseURL` is the wrapper's *projected value*: a `Binding`,
+                // a two-way link that lets the text field change the setting.
+                TextField("API address", text: $baseURL)
+                Text("Production: \(GSClient.productionBaseURL.absoluteString). A local stack: http://localhost:8000/v1.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -109,7 +115,7 @@ struct GeneralSettingsView: View {
         case .checking:
             ProgressView().controlSize(.small)
         case .connected(let profile):
-            Label("Signed in as \(profile.displayName ?? profile.handle ?? profile.id)", systemImage: "checkmark.circle.fill")
+            Label("Connected as \(profile.name)", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")

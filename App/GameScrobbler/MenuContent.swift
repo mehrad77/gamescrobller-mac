@@ -19,6 +19,9 @@ struct MenuContent: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
+        account
+        Divider()
+
         if !model.refusedGames.isEmpty {
             needsYourAnswer
             Divider()
@@ -73,6 +76,30 @@ struct MenuContent: View {
 }
 
 extension MenuContent {
+    /// Who is signed in, with the avatar, and the way to your Hub.
+    @ViewBuilder
+    private var account: some View {
+        if let profile = model.profile {
+            Button {
+                model.openHub()
+            } label: {
+                // A `Label` in a menu item shows its image on the left.
+                Label {
+                    Text(profile.name)
+                } icon: {
+                    if let avatar = model.avatar {
+                        Image(nsImage: avatar.circled(diameter: 18))
+                    } else {
+                        Image(systemName: "person.crop.circle")
+                    }
+                }
+            }
+            Button("Open GameScrobbler Hub") { model.openHub() }
+        } else {
+            Button("Open GameScrobbler Hub") { model.openHub() }
+        }
+    }
+
     /// Each game whose plays the server refused, as a submenu with what you
     /// can do about it. `Menu` inside a menu becomes a submenu.
     private var needsYourAnswer: some View {

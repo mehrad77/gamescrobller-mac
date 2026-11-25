@@ -66,6 +66,11 @@ enum AppSettings {
         return components.url
     }
 
+    /// Your Hub on the website (`/dashboard/hub`), for the "Open Hub" buttons.
+    static var hubURL: URL? {
+        baseURL.flatMap(website(for:))?.appending(path: "dashboard/hub")
+    }
+
     /// The Settings tab to show, so the menu can open the Games tab.
     static let settingsTabKey = "settingsTab"
 
