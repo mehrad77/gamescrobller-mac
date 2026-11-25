@@ -1,8 +1,34 @@
 import ScrobblerCore
 import SwiftUI
 
-/// The Settings window (⌘, from the menu): the server address and the token.
+/// The Settings window's tabs. A `String` raw value, so the selected one
+/// can be saved with `@AppStorage`, and the menu can pick the Games tab.
+enum SettingsTab: String {
+    case general
+    case games
+}
+
+/// The Settings window (⌘, from the menu): a `TabView` with one tab per
+/// page. In a `Settings` scene, macOS draws the tabs as the toolbar buttons
+/// every Mac app's settings have, and resizes the window to fit each tab.
 struct SettingsView: View {
+    let model: AppModel
+    @AppStorage(AppSettings.settingsTabKey) private var tab = SettingsTab.general
+
+    var body: some View {
+        TabView(selection: $tab) {
+            GeneralSettingsView(model: model)
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
+            GamesSettingsView(model: model)
+                .tabItem { Label("Games", systemImage: "gamecontroller") }
+                .tag(SettingsTab.games)
+        }
+    }
+}
+
+/// The General tab: scrobbling on or off, the server address and the token.
+struct GeneralSettingsView: View {
     let model: AppModel
 
     /// `@AppStorage` is a property wrapper that reads and writes one

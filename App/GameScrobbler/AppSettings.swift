@@ -36,11 +36,38 @@ enum AppSettings {
     /// each app for files it keeps for itself. nil only if macOS has no such
     /// folder, which does not happen in practice.
     static func journal(for baseURL: URL) -> PlayJournal? {
-        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        else { return nil }
-        let folder = support.appending(path: Bundle.main.bundleIdentifier ?? "GameScrobbler")
-        return PlayJournal(directory: folder, server: baseURL)
+        supportFolder.map { PlayJournal(directory: $0, server: baseURL) }
     }
+
+    /// What the app keeps about each game for the server at `baseURL`,
+    /// next to its journal.
+    static func recordStore(for baseURL: URL) -> GameRecordStore? {
+        supportFolder.map { GameRecordStore(directory: $0, server: baseURL) }
+    }
+
+    private static var supportFolder: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appending(path: Bundle.main.bundleIdentifier ?? "GameScrobbler")
+    }
+
+    /// The GameScrobbler website that goes with the API at `baseURL`:
+    /// `api.gamescrobbler.com` is served by `gamescrobbler.com`, and a local
+    /// stack's API on port 8000 by its frontend on port 3000.
+    static func website(for baseURL: URL) -> URL? {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+              let host = components.host
+        else { return nil }
+        if host.hasPrefix("api.") {
+            components.host = String(host.dropFirst("api.".count))
+        } else if host == "localhost" || host == "127.0.0.1" {
+            components.port = 3000
+        }
+        components.path = ""
+        return components.url
+    }
+
+    /// The Settings tab to show, so the menu can open the Games tab.
+    static let settingsTabKey = "settingsTab"
 
     /// This Mac's `deviceId` for the API: made once, then kept forever, so
     /// every session from this Mac counts as the same device.

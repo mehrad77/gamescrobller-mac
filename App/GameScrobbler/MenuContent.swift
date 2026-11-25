@@ -19,6 +19,11 @@ struct MenuContent: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
+        if !model.refusedGames.isEmpty {
+            needsYourAnswer
+            Divider()
+        }
+
         Section("Now playing") {
             if model.running.isEmpty {
                 Text("Nothing right now")
@@ -53,6 +58,7 @@ struct MenuContent: View {
         Divider()
 
         Text("GameScrobbler for Mac \(ScrobblerCore.version)")
+        Button("Games…") { model.showInSettings() }
         Button("Settings…") {
             // A menu bar app is never the active app on its own, so the
             // Settings window would open behind other windows without this.
@@ -67,6 +73,30 @@ struct MenuContent: View {
 }
 
 extension MenuContent {
+    /// Each game whose plays the server refused, as a submenu with what you
+    /// can do about it. `Menu` inside a menu becomes a submenu.
+    private var needsYourAnswer: some View {
+        Section("Needs your answer") {
+            ForEach(model.refusedGames) { refused in
+                let game = refused.game
+                Menu {
+                    Text("^[\(refused.playCount) play](inflect: true) waiting for your answer")
+                    Divider()
+                    if model.canAddToLibrary(game) {
+                        Button("Add to My Library") { model.addToLibrary(game) }
+                    }
+                    Button("Show in Settings…") { model.showInSettings(game) }
+                    Divider()
+                    Button("Don’t Scrobble \(game.name)") { model.setIgnored(true, for: game) }
+                } label: {
+                    Text("\(game.name): \(model.status(of: game).title.lowercased())")
+                }
+            }
+        }
+        // Keeps the menu's copy of the "open Settings" action current too.
+        .onAppear { model.openSettingsWindow = { openSettings() } }
+    }
+
     /// One line about scrobbling. `scrobbleStatus` is optional, so the
     /// `switch` uses *optional patterns*: `.idle?` matches "a value that is
     /// `.idle`", and `nil` matches "no value".
@@ -81,6 +111,9 @@ extension MenuContent {
         case .waiting(let until, let error)?:
             return "Trying again at \(until.formatted(date: .omitted, time: .shortened)). \(error.summary)"
         case .failed(let game, let error)?:
+            if case .api(let api) = error, api.status == 404 {
+                return "Not scrobbled: \(game.name) is not in your library"
+            }
             return "Not scrobbled: \(game.name). Kept for the next launch. \(error.summary)"
         case .signedOut(let error)?:
             return "Stopped scrobbling. \(error.summary)"

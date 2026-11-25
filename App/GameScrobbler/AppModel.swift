@@ -36,6 +36,14 @@ final class AppModel {
         case rebuild
         /// The app is quitting: end the open play, then call `done`.
         case quit(at: Date, done: CheckedContinuation<Void, Never>)
+        /// Add the game to your library, then send its refused plays.
+        case addToLibrary(DetectedGame)
+    }
+
+    /// Where asking the server to add a game to your library stands.
+    enum LibraryRequest: Equatable {
+        case adding
+        case failed(String)
     }
 
     private(set) var running: [RunningGame] = []
@@ -50,6 +58,21 @@ final class AppModel {
     private(set) var lastScrobble: GSSession?
     /// Plays saved in the journal and not yet sent.
     private(set) var unsentCount = 0
+    /// Which games you scrobble, and what the server said about each one.
+    /// Saved per server, next to the journal.
+    private(set) var records = GameRecords()
+    /// Games whose plays the server refused on this run.
+    private(set) var refusedGames: [RefusedGame] = []
+    /// Games being added to the library, or that could not be.
+    private(set) var libraryRequests: [String: LibraryRequest] = [:]
+    /// Games added to the library on this run. If the server still refuses
+    /// one, asking "Add it?" again would go round in circles.
+    private(set) var addedThisRun: Set<String> = []
+    /// The game selected in Settings, so the menu can open it there.
+    var selectedGameID: String?
+    /// Opens the Settings window; set by the menu bar icon (see
+    /// `MenuBarIcon`).
+    @ObservationIgnored var openSettingsWindow: (() -> Void)?
 
     // Not part of the UI state, so they need not be observed.
     @ObservationIgnored private let monitor = ProcessMonitor()
@@ -60,6 +83,7 @@ final class AppModel {
     /// The sleep and wake observers. The model lives as long as the app, so
     /// they are never removed; keeping them says what they are.
     @ObservationIgnored private var sleepObservers: [NSObjectProtocol] = []
+    @ObservationIgnored let notifier = Notifier()
 
     init() {
         // The queue every scrobbling input goes through. Set first: Swift
@@ -75,6 +99,8 @@ final class AppModel {
         let appStore = AppStoreClassifier()
         let steam = SteamClassifier()
         installed = InstalledGames.scan(appStore: appStore, steam: steam)
+
+        records = Self.loadRecords()
 
         let tracker = GameTracker(classifiers: [appStore, steam])
         // Watch processes and turn them into game events. `[weak self]` so
@@ -104,6 +130,9 @@ final class AppModel {
             }
         })
         watchSleep()
+        // Check the token and look the games up in your library: reads only,
+        // once per launch.
+        if hasToken { checkConnection() }
     }
 
     // MARK: - Sleep
@@ -181,6 +210,10 @@ final class AppModel {
             }
             scrobbler = nil
             scrobbleStatus = nil
+            refusedGames = []
+            // The server may have changed with the token, and the records
+            // are kept per server.
+            records = Self.loadRecords()
             // The next scrobbler hears about the games already running. These
             // go to the back of the queue, after anything already waiting.
             for game in running {
@@ -192,6 +225,9 @@ final class AppModel {
                 await scrobbler.handle(.stopAll(at: time))
             }
             done.resume()
+
+        case .addToLibrary(let game):
+            await addToLibraryNow(game)
         }
     }
 
@@ -229,7 +265,8 @@ final class AppModel {
         let new = Scrobbler(
             api: GSClient(baseURL: baseURL, token: token),
             deviceID: AppSettings.deviceID,
-            journal: journal
+            journal: journal,
+            ignoredGames: records.ignoredGames
         )
         scrobbler = new
         return new
@@ -257,6 +294,192 @@ final class AppModel {
         if let finished = await scrobbler.lastFinished {
             lastScrobble = finished
         }
+        refusedGames = await scrobbler.refusedGames
+        remember(await scrobbler.recognized)
+        notifyAboutRefusedGames()
+    }
+
+    // MARK: - Games and your library
+
+    /// Every game the app knows of: installed, running, or with plays
+    /// waiting, by name.
+    var allGames: [DetectedGame] {
+        var byID: [String: DetectedGame] = [:]
+        for game in installed + running.map(\.game) + refusedGames.map(\.game) {
+            byID[game.id] = game
+        }
+        return byID.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// What the Games tab and the menu say about a game, most urgent first.
+    func status(of game: DetectedGame) -> GameStatus {
+        let record = records[game.id]
+        if record.ignored { return .ignored }
+        switch libraryRequests[game.id] {
+        case .adding?: return .adding
+        case .failed(let message)?: return .addFailed(message)
+        case nil: break
+        }
+        if let refused = refusedGames.first(where: { $0.game.id == game.id }) {
+            if !refused.isNotInLibrary { return .refused(refused.error.summary) }
+            if addedThisRun.contains(game.id) { return .stillRefused }
+            if record.lookup == .unknownGame { return .unknownGame }
+            return .notInLibrary(plays: refused.playCount)
+        }
+        switch record.lookup {
+        case .unknownGame?: return .unknownGame
+        case .notInLibrary?: return .notOwned
+        case .inLibrary(let title, _)?: return .inLibrary(title: title)
+        case nil: return .notChecked
+        }
+    }
+
+    /// The game's page on the GameScrobbler website, when the server told
+    /// us its slug.
+    func pageURL(of game: DetectedGame) -> URL? {
+        guard case .inLibrary(_, let slug?)? = records[game.id].lookup,
+              let site = AppSettings.baseURL.flatMap(AppSettings.website(for:)) else { return nil }
+        return site.appending(path: "games").appending(path: slug)
+    }
+
+    /// Opens Settings on the Games tab, with `game` selected.
+    func showInSettings(_ game: DetectedGame? = nil) {
+        if let game { selectedGameID = game.id }
+        UserDefaults.standard.set(SettingsTab.games.rawValue, forKey: AppSettings.settingsTabKey)
+        // A menu bar app is never the active app on its own, so the window
+        // would open behind other windows without this.
+        NSApplication.shared.activate()
+        openSettingsWindow?()
+    }
+
+    /// Whether the menu and the notification may offer "Add to Library".
+    func canAddToLibrary(_ game: DetectedGame) -> Bool {
+        switch status(of: game) {
+        // After "unknown game" too: a 404 can also mean scrobbling is off on
+        // the server, or a catalogue that has the game since, so asking
+        // again must stay possible.
+        case .notInLibrary, .notOwned, .notChecked, .addFailed, .unknownGame: true
+        default: false
+        }
+    }
+
+    /// Asks the server to add the game to your library. The request goes through the scrobbling queue, so it never
+    /// overlaps a play being sent.
+    func addToLibrary(_ game: DetectedGame) {
+        guard libraryRequests[game.id] != .adding else { return }
+        libraryRequests[game.id] = .adding
+        scrobbleInput.yield(.addToLibrary(game))
+    }
+
+    /// Turns scrobbling of one game off or on, and tells the scrobbler.
+    func setIgnored(_ ignored: Bool, for game: DetectedGame) {
+        guard records[game.id].ignored != ignored else { return }
+        if ignored { notifier.clear(game) }
+        records[game.id].ignored = ignored
+        saveRecords()
+        scrobbleInput.yield(.event(.ignoredGamesChanged(records.ignoredGames, at: .now)))
+    }
+
+    /// Runs inside the scrobbling loop.
+    private func addToLibraryNow(_ game: DetectedGame) async {
+        guard let client = makeClient() else {
+            libraryRequests[game.id] = .failed("Add a token in Settings first.")
+            return
+        }
+        let ref = game.defaultRef
+        let outcome = await client.addToLibrary(ref)
+
+        var new = records
+        switch outcome {
+        case .added(let entry):
+            new[game.id].lookup = .inLibrary(title: entry.title, slug: entry.slug)
+        case .alreadyInLibrary:
+            // Already there: a read gives its title and slug.
+            if case .inLibrary(let item) = await client.lookUp(ref) {
+                new[game.id].lookup = .inLibrary(title: item.title, slug: item.slug)
+            } else {
+                new[game.id].lookup = .inLibrary(title: nil)
+            }
+        case .unknownGame:
+            new[game.id].lookup = .unknownGame
+        case .failed(let error):
+            libraryRequests[game.id] = .failed(error.summary)
+            return
+        }
+        libraryRequests[game.id] = nil
+        records = new
+        saveRecords()
+        notifier.clear(game)
+
+        guard new[game.id].lookup != .unknownGame else { return }
+        addedThisRun.insert(game.id)
+        if let scrobbler {
+            await scrobbler.handle(.addedToLibrary(gameID: game.id, at: .now))
+            await showState(of: scrobbler)
+        }
+    }
+
+    /// Looks every game up in your library (`GET /me/library/{game}`, a
+    /// read), so the Games tab knows before the first play which ones would
+    /// be refused. One request per game, once per connection check.
+    private func lookUpGames(with client: GSClient) async {
+        for game in allGames where !records[game.id].ignored {
+            let outcome = await client.lookUp(game.defaultRef)
+            var new = records
+            switch outcome {
+            case .inLibrary(let item):
+                new[game.id].lookup = .inLibrary(title: item.title, slug: item.slug)
+            case .notInLibrary:
+                // A game known to be missing from the catalogue stays so.
+                if new[game.id].lookup != .unknownGame { new[game.id].lookup = .notInLibrary }
+            case .failed:
+                continue
+            }
+            if new != records {
+                records = new
+                saveRecords()
+            }
+        }
+    }
+
+    /// Notes what the server called each game it took a session for.
+    private func remember(_ recognized: [String: RecognizedGame]) {
+        var new = records
+        for (id, game) in recognized {
+            // Keep a slug learned before if the session did not carry one.
+            var slug = game.slug
+            if slug == nil, case .inLibrary(_, let known)? = new[id].lookup { slug = known }
+            new[id].lookup = .inLibrary(title: game.title, slug: slug)
+        }
+        guard new != records else { return }
+        records = new
+        saveRecords()
+    }
+
+    /// One notification per game and run, for a game newly refused as not in
+    /// your library.
+    private func notifyAboutRefusedGames() {
+        for refused in refusedGames where status(of: refused.game) == .notInLibrary(plays: refused.playCount) {
+            notifier.notifyNotInLibrary(refused.game)
+        }
+    }
+
+    private static func loadRecords() -> GameRecords {
+        guard let baseURL = AppSettings.baseURL, let store = AppSettings.recordStore(for: baseURL)
+        else { return GameRecords() }
+        return store.load()
+    }
+
+    private func saveRecords() {
+        guard let baseURL = AppSettings.baseURL, let store = AppSettings.recordStore(for: baseURL) else { return }
+        try? store.save(records)
+    }
+
+    /// A client with the saved token, for calls outside the scrobbler.
+    private func makeClient() -> GSClient? {
+        guard hasToken, let baseURL = AppSettings.baseURL, let token = try? tokenStore.token()
+        else { return nil }
+        return GSClient(baseURL: baseURL, token: token)
     }
 
     // MARK: - Settings
@@ -313,7 +536,9 @@ final class AppModel {
             // `catch` is a `GSClientError` and has `summary`. Without it, a
             // `do` inside a closure gives a plain `any Error`.
             do throws(GSClientError) {
-                connection = .connected(try await client.me())
+                let profile = try await client.me()
+                connection = .connected(profile)
+                await lookUpGames(with: client)
             } catch {
                 connection = .failed(error.summary)
             }
