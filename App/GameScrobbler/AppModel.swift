@@ -1,4 +1,4 @@
-import Foundation
+import AppKit  // NSWorkspace
 import Observation
 import ScrobblerCore
 
@@ -57,6 +57,9 @@ final class AppModel {
     @ObservationIgnored private let scrobbleInput: AsyncStream<ScrobbleInput>.Continuation
     @ObservationIgnored private var scrobbler: Scrobbler?
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
+    /// The sleep and wake observers. The model lives as long as the app, so
+    /// they are never removed; keeping them says what they are.
+    @ObservationIgnored private var sleepObservers: [NSObjectProtocol] = []
 
     init() {
         // The queue every scrobbling input goes through. Set first: Swift
@@ -100,6 +103,32 @@ final class AppModel {
                 self?.scrobbleInput.yield(.event(.tick(.now)))
             }
         })
+        watchSleep()
+    }
+
+    // MARK: - Sleep
+
+    /// The Mac sleeping and waking. Only the whole Mac counts: the display
+    /// sleeping, or the screen locking, leaves the game's play going.
+    ///
+    /// These notifications come from `NSWorkspace.shared.notificationCenter`,
+    /// AppKit's own notification center, not `NotificationCenter.default`.
+    /// The time is taken when the notification arrives, so the play ends at
+    /// the sleep even if the scrobbler gets to the event after the wake.
+    private func watchSleep() {
+        let center = NSWorkspace.shared.notificationCenter
+        // A local copy: the closures must be `@Sendable`, so they may not
+        // reach into this main-actor object, only into the (Sendable)
+        // continuation.
+        let input = scrobbleInput
+        sleepObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                input.yield(.event(.sleep(at: .now)))
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                input.yield(.event(.wake(at: .now)))
+            },
+        ]
     }
 
     // MARK: - Games
@@ -134,7 +163,7 @@ final class AppModel {
             // A scrobbler is made when a game starts, or on a tick when the
             // journal holds plays to send. Otherwise the Keychain is not read.
             switch event {
-            case .stopped, .stopAll:
+            case .stopped, .stopAll, .sleep, .wake:
                 if scrobbler == nil { return }
             case .tick:
                 if scrobbler == nil, !journalHasPlays() { return }
