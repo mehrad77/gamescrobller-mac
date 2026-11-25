@@ -74,6 +74,12 @@ enum AppSettings {
     /// The Settings tab to show, so the menu can open the Games tab.
     static let settingsTabKey = "settingsTab"
 
+    /// The `deviceId` of the server check (`GSClient.checkServer`): one no
+    /// session ever uses, so the check stops nothing.
+    static var statusProbeDeviceID: String {
+        deviceID + "-status-check"
+    }
+
     /// This Mac's `deviceId` for the API: made once, then kept forever, so
     /// every session from this Mac counts as the same device.
     static var deviceID: String {

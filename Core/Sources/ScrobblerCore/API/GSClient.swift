@@ -122,6 +122,29 @@ public struct GSClient: Sendable {
         }
     }
 
+    /// Whether the server takes plays now, checked with
+    /// `DELETE /me/now-playing?deviceId=<probeDeviceID>`.
+    ///
+    /// That call stops the open sessions of one device. Sent with a device
+    /// id no session ever uses, it stops nothing and answers
+    /// `{"finished": 0}`, but it sits behind the same switch as every write:
+    /// when the server has writes turned off it answers 404, as it does to
+    /// the plays themselves. **Always send a `deviceId`**: without one, this
+    /// call stops every open session of this app.
+    ///
+    /// API docs: https://developers.gamescrobbler.com/reference/#api-1/tag/activity/DELETE/me/now-playing
+    public func checkServer(probeDeviceID: String) async -> ServerStatus {
+        do throws(GSClientError) {
+            let _: ClearNowPlayingResult = try await send(
+                "DELETE", "me/now-playing",
+                query: [URLQueryItem(name: "deviceId", value: probeDeviceID)]
+            )
+            return .acceptingPlays
+        } catch {
+            return ServerStatus(error: error)
+        }
+    }
+
     /// `POST /me/library/entries`: adds a game to your library as a custom
     /// entry, so sessions for it are accepted. The server resolves any game
     /// in its catalogue here, so a 404 means it does not know the game at
@@ -157,11 +180,16 @@ public struct GSClient: Sendable {
     private func send<Response: Decodable>(
         _ method: String,
         _ path: String,
+        query: [URLQueryItem] = [],
         body: Data? = nil,
         idempotencyKey: String? = nil
     ) async throws(GSClientError) -> Response {
         // `appending(path:)` adds the slash: ".../v1" + "me" = ".../v1/me".
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var url = baseURL.appending(path: path)
+        if !query.isEmpty {
+            url.append(queryItems: query)
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 30
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

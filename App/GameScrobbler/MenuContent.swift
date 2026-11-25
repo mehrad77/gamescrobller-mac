@@ -40,6 +40,9 @@ struct MenuContent: View {
                 }
             }
             Text(scrobbleLine)
+            if model.serverStatus == .playsTurnedOff {
+                Text("GameScrobbler isn’t taking plays right now; they are kept")
+            }
             if model.unsentCount > 0 {
                 // `^[…](inflect: true)` is *automatic grammar agreement*:
                 // Foundation writes "1 play" or "2 plays" to match the number.

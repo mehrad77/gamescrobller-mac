@@ -106,6 +106,34 @@ public enum LibraryLookupOutcome: Sendable, Equatable {
     case failed(GSClientError)
 }
 
+/// The answer of `DELETE /me/now-playing`; only `finished` is read.
+struct ClearNowPlayingResult: Decodable {
+    let finished: Int
+}
+
+/// Whether the server takes plays now (`GSClient.checkServer`).
+public enum ServerStatus: Sendable, Equatable {
+    case acceptingPlays
+    /// 404: writes are turned off on the server. Plays are kept and sent
+    /// once it takes them again.
+    case playsTurnedOff
+    /// 401 or 403: the token is wrong, expired, or lacks `activity:write`.
+    case tokenRefused(GSClientError)
+    /// Offline, or the server is in trouble.
+    case unreachable(GSClientError)
+
+    init(error: GSClientError) {
+        if case .api(let api) = error {
+            switch api.status {
+            case 404: self = .playsTurnedOff; return
+            case 401, 403: self = .tokenRefused(error); return
+            default: break
+            }
+        }
+        self = .unreachable(error)
+    }
+}
+
 /// The body of `POST /me/library/entries`.
 struct CreateLibraryEntryBody: Encodable {
     var game: GameRef

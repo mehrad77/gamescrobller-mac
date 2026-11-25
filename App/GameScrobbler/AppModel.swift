@@ -52,6 +52,8 @@ final class AppModel {
     private(set) var hasToken = false
     private(set) var connection: Connection = .notChecked
     private(set) var scrobblingEnabled = AppSettings.scrobblingEnabled
+    /// Whether the server takes plays, from the last connection check.
+    private(set) var serverStatus: ServerStatus?
     /// nil until a scrobbler exists (scrobbling off, no token, or no game
     /// started since launch).
     private(set) var scrobbleStatus: ScrobbleStatus?
@@ -302,7 +304,13 @@ final class AppModel {
         if let finished = await scrobbler.lastFinished {
             lastScrobble = finished
         }
+        let before = Set(refusedGames.map(\.id))
         refusedGames = await scrobbler.refusedGames
+        // A newly refused game may only mean the server stopped taking plays:
+        // check that before asking you to add it.
+        if refusedGames.contains(where: { $0.isNotInLibrary && !before.contains($0.id) }) {
+            await recheckServer()
+        }
         remember(await scrobbler.recognized)
         notifyAboutRefusedGames()
     }
@@ -330,6 +338,9 @@ final class AppModel {
         }
         if let refused = refusedGames.first(where: { $0.game.id == game.id }) {
             if !refused.isNotInLibrary { return .refused(refused.error.summary) }
+            if serverStatus == .playsTurnedOff {
+                return .refused("GameScrobbler isn’t taking plays right now; they are kept and sent later.")
+            }
             if addedThisRun.contains(game.id) { return .stillRefused }
             if record.lookup == .unknownGame { return .unknownGame }
             return .notInLibrary(plays: refused.playCount)
@@ -362,7 +373,10 @@ final class AppModel {
 
     /// Whether the menu and the notification may offer "Add to Library".
     func canAddToLibrary(_ game: DetectedGame) -> Bool {
-        switch status(of: game) {
+        // With writes off, adding answers 404 like an unknown game would.
+        if serverStatus == .playsTurnedOff { return false }
+        // A `switch` is an expression too: `return switch` returns its value.
+        return switch status(of: game) {
         // After "unknown game" too: a 404 can also mean scrobbling is off on
         // the server, or a catalogue that has the game since, so asking
         // again must stay possible.
@@ -409,6 +423,13 @@ final class AppModel {
                 new[game.id].lookup = .inLibrary(title: nil)
             }
         case .unknownGame:
+            // The same 404 comes back when the server stopped taking writes:
+            // only a server that takes plays means the game is unknown.
+            await recheckServer()
+            guard serverStatus == .acceptingPlays else {
+                libraryRequests[game.id] = nil
+                return
+            }
             new[game.id].lookup = .unknownGame
         case .failed(let error):
             libraryRequests[game.id] = .failed(error.summary)
@@ -425,6 +446,12 @@ final class AppModel {
             await scrobbler.handle(.addedToLibrary(gameID: game.id, at: .now))
             await showState(of: scrobbler)
         }
+    }
+
+    /// Asks the server again whether it takes plays.
+    private func recheckServer() async {
+        guard let client = makeClient() else { return }
+        serverStatus = await client.checkServer(probeDeviceID: AppSettings.statusProbeDeviceID)
     }
 
     /// Looks every game up in your library (`GET /me/library/{game}`, a
@@ -467,6 +494,9 @@ final class AppModel {
     /// One notification per game and run, for a game newly refused as not in
     /// your library.
     private func notifyAboutRefusedGames() {
+        // With writes off, every play is refused the same way: asking to add
+        // each game would only mislead.
+        guard serverStatus != .playsTurnedOff else { return }
         for refused in refusedGames where status(of: refused.game) == .notInLibrary(plays: refused.playCount) {
             notifier.notifyNotInLibrary(refused.game)
         }
@@ -531,6 +561,7 @@ final class AppModel {
             try tokenStore.delete()
             hasToken = false
             connection = .notChecked
+            serverStatus = nil
             avatar = nil
             scrobbleInput.yield(.rebuild)
         } catch {
@@ -567,10 +598,12 @@ final class AppModel {
             do throws(GSClientError) {
                 let profile = try await client.me()
                 connection = .connected(profile)
+                serverStatus = await client.checkServer(probeDeviceID: AppSettings.statusProbeDeviceID)
                 await loadAvatar(of: profile)
                 await lookUpGames(with: client)
             } catch {
                 connection = .failed(error.summary)
+                serverStatus = nil
             }
         }
     }

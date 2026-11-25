@@ -76,6 +76,9 @@ struct GeneralSettingsView: View {
                     Button("Check Connection") { model.checkConnection() }
                         .disabled(!model.hasToken)
                 }
+                if let status = model.serverStatus {
+                    serverStatus(status)
+                }
             }
 
             Section("Scrobbling") {
@@ -103,6 +106,25 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 480)
+    }
+
+    /// Whether GameScrobbler takes plays now, from the last check.
+    @ViewBuilder
+    private func serverStatus(_ status: ServerStatus) -> some View {
+        switch status {
+        case .acceptingPlays:
+            Label("GameScrobbler is taking plays", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .playsTurnedOff:
+            Label("GameScrobbler isn’t taking plays right now. They are kept and sent once it does.", systemImage: "pause.circle.fill")
+                .foregroundStyle(.orange)
+        case .tokenRefused(let error):
+            Label("The token can’t send plays. \(error.summary)", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        case .unreachable(let error):
+            Label(error.summary, systemImage: "wifi.exclamationmark")
+                .foregroundStyle(.orange)
+        }
     }
 
     /// A computed property can return part of a view, to keep `body` short.

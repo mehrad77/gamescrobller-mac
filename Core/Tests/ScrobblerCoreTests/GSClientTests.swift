@@ -284,5 +284,39 @@ struct GSClientTests {
 
         #expect(await server.client().lookUp(.store(.apple, id: "1456188526")) == .notInLibrary)
     }
+
+    // MARK: - Server status
+
+    @Test func theServerCheckStopsNothingAndNamesTheProbeDevice() async throws {
+        let server = FakeServer(json: #"{"finished": 0, "hint": "No open session"}"#)
+
+        let status = await server.client().checkServer(probeDeviceID: "mac-1-status-probe")
+
+        #expect(status == .acceptingPlays)
+        let request = try #require(await server.requests.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.absoluteString == "https://api.test/v1/me/now-playing?deviceId=mac-1-status-probe")
+    }
+
+    @Test("server status answers", arguments: [
+        (404, "not_found", ServerStatus.playsTurnedOff),
+        (403, "insufficient_scope", .tokenRefused(.api(GSAPIError(
+            status: 403, code: .insufficientScope, message: "?", requestID: "req-7", retryAfter: nil
+        )))),
+    ])
+    func serverStatusAnswers(status: Int, code: String, expected: ServerStatus) async {
+        let server = FakeServer(status: status, json: """
+        {"error": {"code": "\(code)", "message": "?", "requestId": "req-7"}}
+        """)
+
+        #expect(await server.client().checkServer(probeDeviceID: "p") == expected)
+    }
+
+    @Test func anOfflineServerIsUnreachable() async {
+        let server = FakeServer(failure: URLError(.notConnectedToInternet))
+
+        #expect(await server.client().checkServer(probeDeviceID: "p")
+            == .unreachable(.network(URLError(.notConnectedToInternet))))
+    }
 }
 
