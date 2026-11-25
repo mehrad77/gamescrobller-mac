@@ -34,6 +34,8 @@ final class AppModel {
         /// Finish with the current scrobbler and start afresh: the token, or
         /// the on/off switch, changed.
         case rebuild
+        /// The app is quitting: end the open play, then call `done`.
+        case quit(at: Date, done: CheckedContinuation<Void, Never>)
     }
 
     private(set) var running: [RunningGame] = []
@@ -155,6 +157,36 @@ final class AppModel {
             for game in running {
                 scrobbleInput.yield(.event(.started(game.game, at: .now)))
             }
+
+        case .quit(let time, let done):
+            if let scrobbler {
+                await scrobbler.handle(.stopAll(at: time))
+            }
+            done.resume()
+        }
+    }
+
+    /// Whether quitting has a play to end first.
+    var hasOpenPlay: Bool {
+        scrobbler != nil && !running.isEmpty
+    }
+
+    /// Ends the open play, for a quit. It goes through the same queue as
+    /// every other input, so it runs after whatever is already waiting.
+    ///
+    /// When the loop gets to it, the journal gets the play's end before the
+    /// finish goes out, so if the app is gone before the server answers, the
+    /// next launch sends it. If a request already in flight holds the loop
+    /// past the quit timeout, the end is never written, and the next launch
+    /// ends the play where it was last seen (up to a minute short).
+    ///
+    /// `withCheckedContinuation` turns "call me back when done" into
+    /// something to `await`: the loop calls `done.resume()`, and this
+    /// function returns then. The time is taken now, at the quit.
+    func endPlayForQuit() async {
+        let time = Date.now
+        await withCheckedContinuation { done in
+            scrobbleInput.yield(.quit(at: time, done: done))
         }
     }
 

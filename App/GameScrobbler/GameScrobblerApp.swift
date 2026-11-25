@@ -12,9 +12,15 @@ import SwiftUI
 /// the Xcode project ("Application is agent") keeps the app out of the Dock.
 @main
 struct GameScrobblerApp: App {
-    /// `@State` makes SwiftUI own this object for the app's whole life: it is
-    /// created once, and SwiftUI keeps it while it re-evaluates `body`.
-    @State private var model = AppModel()
+    /// SwiftUI has no "the app is about to quit" hook, but AppKit does, on
+    /// its *application delegate*. `@NSApplicationDelegateAdaptor` makes one
+    /// `AppDelegate` for the app's whole life and hands it to AppKit.
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+
+    /// The delegate owns the model, so the quit hook can reach it. Views
+    /// still redraw when it changes: that comes from `@Observable`, not from
+    /// where the model is stored.
+    private var model: AppModel { appDelegate.model }
 
     /// `some Scene` is an *opaque type*: "some specific type that conforms to
     /// Scene, which the compiler knows and I don't have to spell out".
@@ -31,5 +37,41 @@ struct GameScrobblerApp: App {
         Settings {
             SettingsView(model: model)
         }
+    }
+}
+
+/// Answers AppKit's questions about the app's life. An `NSObject` subclass,
+/// because AppKit is an Objective-C framework and calls these methods by name.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let model = AppModel()
+
+    /// The longest a quit waits for the server. The journal already has the
+    /// play's end by then, so the next launch sends whatever did not get out.
+    private static let quitTimeout: Duration = .seconds(3)
+
+    /// AppKit asks before quitting. `.terminateLater` means "not yet": the
+    /// app keeps running until `reply(toApplicationShouldTerminate:)`.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard model.hasOpenPlay else { return .terminateNow }
+
+        // Two tasks race: the play's end reaching the server, and the
+        // timeout. Whichever finishes first lets the app quit. Both run on
+        // the main actor, one after the other, so `replied` needs no lock.
+        var replied = false
+        let reply = {
+            guard !replied else { return }
+            replied = true
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        Task {
+            await model.endPlayForQuit()
+            reply()
+        }
+        Task {
+            try? await Task.sleep(for: Self.quitTimeout)
+            reply()
+        }
+        return .terminateLater
     }
 }
