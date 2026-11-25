@@ -75,6 +75,10 @@ public enum ScrobbleStatus: Sendable, Equatable {
 ///   it (45 silent minutes, or the 24-hour limit): a new play begins.
 /// - Sleep ends the open play; the wake begins a new one for the newest game
 ///   still running. Nothing is scrobbled while the Mac sleeps.
+/// - A play counts once it has lasted `minPlayLength` (a minute). Its live
+///   start waits until then (with the real `startedAt`), and a play that
+///   ends sooner is dropped, so a quick launch, a quick switch or a crash
+///   right after a start leaves no session on the server.
 ///
 /// API docs: https://developers.gamescrobbler.com/guides/recording-play/#the-full-path-sessions
 ///
@@ -96,6 +100,7 @@ public actor Scrobbler {
     private let deviceID: String
     private let journal: PlayJournal
     private let heartbeatInterval: TimeInterval
+    private let minPlayLength: TimeInterval
     private let makeID: @Sendable () -> String
 
     /// Running games, oldest first. The last one is the one being scrobbled.
@@ -123,9 +128,21 @@ public actor Scrobbler {
     /// The session finished most recently, as the server recorded it.
     public private(set) var lastFinished: GSSession?
 
-    /// Plays that still need a request, for the menu.
+    /// The time of the last event handled: "now", as far as the scrobbler
+    /// knows.
+    private var lastEventTime: Date?
+
+    /// Plays that still need a request, for the menu. A play in its first
+    /// minute is not counted: its start is not due yet, so it is not waiting.
     public var unsentCount: Int {
-        plays.count { $0.nextRequest != nil }
+        plays.count { play in
+            guard let request = play.nextRequest else { return false }
+            if request == .liveStart, let now = lastEventTime,
+               now.timeIntervalSince(play.startedAt) < minPlayLength {
+                return false
+            }
+            return true
+        }
     }
 
     /// Reads the journal, so plays left over from the last run are sent too.
@@ -138,6 +155,8 @@ public actor Scrobbler {
     ///     refuse as too old.
     ///   - heartbeatInterval: seconds between heartbeats; the guide suggests 5
     ///     minutes and the server closes a session after 45 silent ones.
+    ///   - minPlayLength: seconds a play must last to be sent. Most tests pass
+    ///     0, so a start goes out at once.
     ///   - makeID: makes `clientSessionId`s and idempotency keys. Tests pass a
     ///     counter so the ids are predictable.
     public init(
@@ -146,12 +165,14 @@ public actor Scrobbler {
         journal: PlayJournal,
         now: Date = .now,
         heartbeatInterval: TimeInterval = 5 * 60,
+        minPlayLength: TimeInterval = 60,
         makeID: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
         self.api = api
         self.deviceID = deviceID
         self.journal = journal
         self.heartbeatInterval = heartbeatInterval
+        self.minPlayLength = minPlayLength
         self.makeID = makeID
 
         var saved: [Play]
@@ -168,7 +189,8 @@ public actor Scrobbler {
         for index in saved.indices where saved[index].endedAt == nil {
             saved[index].end(at: saved[index].lastSeenAt, newKey: makeID())
         }
-        saved.removeAll { Self.isTooOld($0, at: now) }
+        // A crash right after a start can leave a play too short to count.
+        saved.removeAll { Self.isTooOld($0, at: now) || Self.isTooShort($0, minimum: minPlayLength) }
         // A local copy is saved, not `self.plays`: in an initializer that is
         // not `async`, an actor's own state is off limits once it is set up.
         try? journal.save(saved)
@@ -176,6 +198,7 @@ public actor Scrobbler {
     }
 
     public func handle(_ event: ScrobbleEvent) async {
+        lastEventTime = event.time
         // First the journal: what happened is written down before anything
         // goes out, so a request cut short by a quit is sent again later.
         switch event {
@@ -194,7 +217,7 @@ public actor Scrobbler {
         case .wake(let time):
             wokeUp(at: time)
         }
-        plays.removeAll { Self.isTooOld($0, at: event.time) }
+        plays.removeAll { Self.isTooOld($0, at: event.time) || Self.isTooShort($0, minimum: minPlayLength) }
         save()
 
         // Then the network.
@@ -268,7 +291,8 @@ public actor Scrobbler {
             case .conflict, .refused:
                 // The server already closed it at its last heartbeat, so it
                 // has that session in full. The game is still running: a new
-                // play begins, and the pass below starts it.
+                // play begins, and its start goes out once it is a
+                // minute old.
                 reachedServer()
                 remove(play.id)
                 nextHeartbeat = nil
@@ -293,6 +317,9 @@ public actor Scrobbler {
 
             switch request {
             case .liveStart:
+                // Not yet a minute old: a later tick sends it. It is the open
+                // play, so it is last, and nothing waits behind it.
+                guard now.timeIntervalSince(play.startedAt) >= minPlayLength else { continue }
                 await sendLiveStart(play, now: now)
             case .finish(let sessionID, let endedAt):
                 await sendFinish(play, sessionID: sessionID, endedAt: endedAt, now: now)
@@ -475,6 +502,16 @@ public actor Scrobbler {
 
     private static func isTooOld(_ play: Play, at now: Date) -> Bool {
         play.endedAt != nil && now.timeIntervalSince(play.startedAt) > maxPlayAge
+    }
+
+    /// A play that ended before it counted, and that the server never heard
+    /// of. One that did get its live start is finished as usual: the server
+    /// has it already. The server refuses a log that ends where it starts,
+    /// so that one is dropped even when there is no minimum.
+    private static func isTooShort(_ play: Play, minimum: TimeInterval) -> Bool {
+        guard play.sessionID == nil, let end = play.endedAt else { return false }
+        let length = end.timeIntervalSince(play.startedAt)
+        return length <= 0 || length < minimum
     }
 
     private static func seconds(_ duration: Duration) -> TimeInterval {

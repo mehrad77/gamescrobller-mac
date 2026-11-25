@@ -170,10 +170,13 @@ final class ScrobblerTests {
         .appending(path: "ScrobblerTests-\(UUID().uuidString)")
     private let journal: PlayJournal
     private var scrobbler: Scrobbler
+    /// The shortest play that counts. 0 in most tests, so a start goes out
+    /// at once; the short-play tests use the app's real minute.
+    private var minPlayLength: TimeInterval = 0
 
     init() {
         journal = PlayJournal(fileURL: directory.appending(path: "plays.json"))
-        scrobbler = Scrobbler(api: api, deviceID: "mac-test", journal: journal, now: t0)
+        scrobbler = Scrobbler(api: api, deviceID: "mac-test", journal: journal, now: t0, minPlayLength: 0)
     }
 
     deinit {
@@ -183,7 +186,13 @@ final class ScrobblerTests {
     /// The app quits (or crashes) and starts again: a new scrobbler reads
     /// the same journal and talks to the same server.
     private func relaunch(at time: Date) {
-        scrobbler = Scrobbler(api: api, deviceID: "mac-test", journal: journal, now: time)
+        scrobbler = Scrobbler(api: api, deviceID: "mac-test", journal: journal, now: time, minPlayLength: minPlayLength)
+    }
+
+    /// Plays must last a minute from here on, as in the app.
+    private func requireAMinute() {
+        minPlayLength = 60
+        relaunch(at: t0)
     }
 
     // MARK: - Sessions
@@ -333,6 +342,64 @@ final class ScrobblerTests {
         let calls = await api.calls
         #expect(calls.last == .finish("s2", endedAt: minutes(8)))
         #expect(calls.count == 4)  // nothing resumes after stopAll
+    }
+
+    // MARK: - Short plays
+
+    @Test func theLiveStartWaitsUntilThePlayIsAMinuteOld() async {
+        requireAMinute()
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.tick(minutes(0.5)))
+        #expect(await api.calls.isEmpty)
+        // Not "waiting to be sent" in the menu: its start is not due yet.
+        #expect(await scrobbler.unsentCount == 0)
+
+        await scrobbler.handle(.tick(minutes(1.5)))
+        // It goes out with the real start, not the tick's time.
+        #expect(await api.calls == [.start(game: "apple:1456188526", startedAt: t0)])
+    }
+
+    @Test func aPlayShorterThanAMinuteIsNeverSent() async throws {
+        requireAMinute()
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.tick(minutes(0.5)))
+        await scrobbler.handle(.stopped(motorways, at: minutes(0.75)))
+
+        #expect(await api.calls.isEmpty)
+        #expect(await scrobbler.unsentCount == 0)
+        #expect(try journal.load().isEmpty)
+    }
+
+    @Test func aGameSwitchedAwayFromQuicklyIsNotSent() async {
+        requireAMinute()
+        await scrobbler.handle(.started(morta, at: t0))
+        await scrobbler.handle(.started(motorways, at: minutes(0.25)))
+        await scrobbler.handle(.tick(minutes(1.5)))
+
+        #expect(await api.calls == [.start(game: "apple:1456188526", startedAt: minutes(0.25))])
+    }
+
+    /// What the live test found: the app crashed less than a minute after
+    /// a wake, and the play ended where it was last seen, its own start.
+    @Test func aCrashRightAfterAStartLeavesNoSession() async {
+        requireAMinute()
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.tick(minutes(0.5)))
+        relaunch(at: minutes(5))
+        await scrobbler.handle(.tick(minutes(5)))
+
+        #expect(await api.calls.isEmpty)
+        #expect(await scrobbler.unsentCount == 0)
+    }
+
+    @Test func aPlayOfNoLengthIsDroppedEvenWithoutAMinimum() async {
+        // The server refuses a log that ends where it starts.
+        await api.failNextStart(with: offline)
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.stopped(motorways, at: t0))
+
+        #expect(await scrobbler.unsentCount == 0)
+        #expect(await api.calls.count == 1)  // only the failed start
     }
 
     // MARK: - Sleep
