@@ -12,6 +12,27 @@ through its public API.
 
 Work in progress; this is also my first Swift project.
 
+## Install
+
+Needs macOS 14 Sonoma or later, on Apple silicon or Intel.
+
+1. Download the `.dmg` from the [latest release](https://github.com/mehrad77/gamescrobller-mac/releases/latest),
+   open it, and drag **GameScrobbler** to **Applications**.
+2. Open GameScrobbler from Applications. The app is not signed with an Apple
+   Developer ID, so macOS blocks the first launch. Allow it once, either way:
+   - in **System Settings → Privacy & Security**, click **Open Anyway** next to
+     the message about GameScrobbler;
+   - or run this in Terminal:
+
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/GameScrobbler.app
+     ```
+
+3. Click the GameScrobbler icon in the menu bar and open **Settings…**. Paste a
+   personal access token, created on gamescrobbler.com in your developer
+   settings with the `activity:write` and `library:write` scopes.
+4. Turn on **Send plays to GameScrobbler**.
+
 ## Layout
 
 ```text
