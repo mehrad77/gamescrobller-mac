@@ -4,5 +4,5 @@
 /// idiomatic Swift way to group static constants.
 public enum ScrobblerCore {
     /// Shown in the menu and sent nowhere; bump it when you tag a release.
-    public static let version = "0.1.0"
+    public static let version = "0.2.0"
 }
