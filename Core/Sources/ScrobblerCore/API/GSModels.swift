@@ -87,6 +87,72 @@ struct FinishSessionBody: Encodable {
     var endedAt: Date?
 }
 
+/// One game in your library, from `GET /me/library/{game}`. Only the
+/// fields the app uses; the answer has more.
+///
+/// API docs: https://developers.gamescrobbler.com/reference/#api-1/tag/library/GET/me/library/{game}
+public struct GSLibraryItem: Decodable, Sendable, Equatable {
+    public let gameId: String
+    public let slug: String?
+    public let title: String
+}
+
+/// What looking a game up in your library came to.
+public enum LibraryLookupOutcome: Sendable, Equatable {
+    case inLibrary(GSLibraryItem)
+    /// 404: not in your library, or a reference the server does not know.
+    case notInLibrary
+    /// Offline, or anything else: nothing learned.
+    case failed(GSClientError)
+}
+
+/// The body of `POST /me/library/entries`.
+struct CreateLibraryEntryBody: Encodable {
+    var game: GameRef
+}
+
+/// A custom library entry, from `POST /me/library/entries`.
+///
+/// API docs: https://developers.gamescrobbler.com/reference/#api-1/tag/library/POST/me/library/entries
+public struct GSLibraryEntry: Decodable, Sendable, Equatable {
+    /// The entry's id, used to delete it.
+    public let id: String
+    /// The game the reference resolved to.
+    public let gameId: String
+    public let slug: String?
+    /// The game's title on GameScrobbler: the proof the reference named the
+    /// game you meant.
+    public let title: String
+    public let createdAt: Date
+}
+
+/// What adding a game to the library came to, sorted by what the app does
+/// next.
+public enum LibraryEntryOutcome: Sendable, Equatable {
+    /// 200 or 201: the game is in the library now. Its plays can be sent.
+    case added(GSLibraryEntry)
+    /// 409: the game was already in the library (from a store you linked, or
+    /// another app's entry). Its plays can be sent too.
+    case alreadyInLibrary
+    /// 404: GameScrobbler's catalogue has no game for this reference (or
+    /// scrobbling is off on the server, which answers the same).
+    case unknownGame
+    /// Anything else (offline, the daily limit, a token without
+    /// `library:write`): nothing changed, and asking again later may work.
+    case failed(GSClientError)
+
+    init(error: GSClientError) {
+        if case .api(let api) = error {
+            switch api.status {
+            case 409 where api.code == .conflict: self = .alreadyInLibrary; return
+            case 404: self = .unknownGame; return
+            default: break
+            }
+        }
+        self = .failed(error)
+    }
+}
+
 /// A `GameRef` goes into JSON as the API's text form, such as `"steam:570"`,
 /// both in request bodies and in the play journal.
 ///

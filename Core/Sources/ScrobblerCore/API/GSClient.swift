@@ -103,6 +103,49 @@ public struct GSClient: Sendable {
         )
     }
 
+    /// `GET /me/library/{game}`: the game as it is in your library. A read:
+    /// it changes nothing. 404 means it is not in your library (or the
+    /// server does not know the reference, which it does not tell apart).
+    ///
+    /// API docs: https://developers.gamescrobbler.com/reference/#api-1/tag/library/GET/me/library/{game}
+    public func libraryItem(game: GameRef) async throws(GSClientError) -> GSLibraryItem {
+        try await send("GET", "me/library/\(game.apiValue)")
+    }
+
+    /// Whether `game` is in your library, sorted into what the app shows.
+    public func lookUp(_ game: GameRef) async -> LibraryLookupOutcome {
+        do throws(GSClientError) {
+            return .inLibrary(try await libraryItem(game: game))
+        } catch {
+            if case .api(let api) = error, api.status == 404 { return .notInLibrary }
+            return .failed(error)
+        }
+    }
+
+    /// `POST /me/library/entries`: adds a game to your library as a custom
+    /// entry, so sessions for it are accepted. The server resolves any game
+    /// in its catalogue here, so a 404 means it does not know the game at
+    /// all. At most 20 entries a day (429 after that).
+    ///
+    /// No `Idempotency-Key`: asking again for a game this app already added
+    /// answers 200 with the same entry, and a game already in the library
+    /// answers 409 `conflict`, so a retry never makes a second entry.
+    ///
+    /// API docs: https://developers.gamescrobbler.com/reference/#api-1/tag/library/POST/me/library/entries
+    public func createLibraryEntry(game: GameRef) async throws(GSClientError) -> GSLibraryEntry {
+        try await send("POST", "me/library/entries", body: Self.encode(CreateLibraryEntryBody(game: game)))
+    }
+
+    /// Adds `game` to the library and sorts the answer into what the app
+    /// does next. Never throws: every failure is one of the outcomes.
+    public func addToLibrary(_ game: GameRef) async -> LibraryEntryOutcome {
+        do throws(GSClientError) {
+            return .added(try await createLibraryEntry(game: game))
+        } catch {
+            return LibraryEntryOutcome(error: error)
+        }
+    }
+
     // MARK: - Sending a request
 
     /// Builds the request, sends it, and turns the answer into `Response` or

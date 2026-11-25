@@ -213,4 +213,76 @@ struct GSClientTests {
             try await server.client().me()
         }
     }
+
+    // MARK: - Library entries
+
+    private let entryJSON = """
+    {"id": "e-1", "gameId": "g_7k2m9q4xzt", "slug": "mini-motorways",
+     "title": "Mini Motorways", "createdAt": "2026-11-25T18:30:00.000Z"}
+    """
+
+    @Test func addingToTheLibraryPostsTheReference() async throws {
+        let server = FakeServer(status: 201, json: entryJSON)
+
+        let outcome = await server.client().addToLibrary(.store(.apple, id: "1456188526"))
+
+        guard case .added(let entry) = outcome else {
+            Issue.record("expected .added, got \(outcome)")
+            return
+        }
+        #expect(entry.title == "Mini Motorways")
+        let request = try #require(await server.requests.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.absoluteString == "https://api.test/v1/me/library/entries")
+        #expect(try jsonBody(request)["game"] == "apple:1456188526")
+        #expect(request.value(forHTTPHeaderField: "Idempotency-Key") == nil)
+    }
+
+    @Test("library entry answers", arguments: [
+        (409, "conflict", LibraryEntryOutcome.alreadyInLibrary),
+        (404, "not_found", LibraryEntryOutcome.unknownGame),
+    ])
+    func libraryEntryAnswers(status: Int, code: String, expected: LibraryEntryOutcome) async {
+        let server = FakeServer(status: status, json: """
+        {"error": {"code": "\(code)", "message": "?", "requestId": "req-4"}}
+        """)
+
+        #expect(await server.client().addToLibrary(.slug("mini-motorways")) == expected)
+    }
+
+    @Test func aFullDayOfEntriesIsAFailureToShow() async {
+        let server = FakeServer(status: 429, json: """
+        {"error": {"code": "rate_limited", "message": "At most 20", "requestId": "req-5"}}
+        """)
+
+        let outcome = await server.client().addToLibrary(.slug("mini-motorways"))
+
+        guard case .failed(.api(let error)) = outcome else {
+            Issue.record("expected a failure, got \(outcome)")
+            return
+        }
+        #expect(error.code == .rateLimited)
+    }
+
+    @Test func lookingUpAGameReadsYourLibrary() async throws {
+        let server = FakeServer(json: """
+        {"gameId": "84725", "slug": "children-of-morta", "title": "Children of Morta", "playtimeSeconds": 1081}
+        """)
+
+        let outcome = await server.client().lookUp(.store(.steam, id: "330020"))
+
+        #expect(outcome == .inLibrary(GSLibraryItem(gameId: "84725", slug: "children-of-morta", title: "Children of Morta")))
+        let request = try #require(await server.requests.first)
+        #expect(request.httpMethod == "GET")
+        #expect(request.url?.absoluteString == "https://api.test/v1/me/library/steam:330020")
+    }
+
+    @Test func aGameNotInYourLibraryIsAnAnswerNotAnError() async {
+        let server = FakeServer(status: 404, json: """
+        {"error": {"code": "not_found", "message": "Game not found in the library", "requestId": "req-6"}}
+        """)
+
+        #expect(await server.client().lookUp(.store(.apple, id: "1456188526")) == .notInLibrary)
+    }
 }
+
