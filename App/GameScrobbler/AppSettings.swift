@@ -22,6 +22,25 @@ enum AppSettings {
         else { return nil }
         return url
     }
+
+    /// Whether plays are sent to GameScrobbler. Off until you turn it on, so
+    /// launching a test build with a game open never writes by surprise.
+    /// `bool(forKey:)` answers false for a key that was never saved.
+    static var scrobblingEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "scrobblingEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "scrobblingEnabled") }
+    }
+
+    /// This Mac's `deviceId` for the API: made once, then kept forever, so
+    /// every session from this Mac counts as the same device.
+    static var deviceID: String {
+        if let saved = UserDefaults.standard.string(forKey: "deviceID") {
+            return saved
+        }
+        let new = "mac-" + UUID().uuidString.lowercased()
+        UserDefaults.standard.set(new, forKey: "deviceID")
+        return new
+    }
 }
 
 extension GSClientError {

@@ -31,6 +31,10 @@ struct MenuContent: View {
                     Text("\(running.game.name), since \(running.startedAt.formatted(date: .omitted, time: .shortened))")
                 }
             }
+            Text(scrobbleLine)
+            if let last = model.lastScrobble {
+                Text("Last scrobbled: \(last.gameTitle), \(last.durationSeconds / 60) min")
+            }
         }
 
         Divider()
@@ -54,6 +58,26 @@ struct MenuContent: View {
         // `.keyboardShortcut("q")` gives the item a ⌘Q shortcut.
         Button("Quit") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
+    }
+}
+
+extension MenuContent {
+    /// One line about scrobbling. `scrobbleStatus` is optional, so the
+    /// `switch` uses *optional patterns*: `.idle?` matches "a value that is
+    /// `.idle`", and `nil` matches "no value".
+    private var scrobbleLine: String {
+        if !model.scrobblingEnabled { return "Scrobbling is off (turn it on in Settings)" }
+        if !model.hasToken { return "Add a token in Settings to scrobble" }
+        switch model.scrobbleStatus {
+        case nil, .idle?:
+            return "Ready to scrobble"
+        case .scrobbling(let game, _)?:
+            return "Scrobbling \(game.name)"
+        case .failed(let game, let error)?:
+            return "Not scrobbled: \(game.name). \(error.summary)"
+        case .signedOut(let error)?:
+            return "Stopped scrobbling. \(error.summary)"
+        }
     }
 }
 

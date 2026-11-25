@@ -28,18 +28,39 @@ final class AppModel {
         case failed(String)
     }
 
+    /// What the one scrobbling loop works through, strictly in order.
+    private enum ScrobbleInput {
+        case event(ScrobbleEvent)
+        /// Finish with the current scrobbler and start afresh: the token, or
+        /// the on/off switch, changed.
+        case rebuild
+    }
+
     private(set) var running: [RunningGame] = []
     private(set) var installed: [DetectedGame] = []
     /// Whether a token is in the Keychain. The token itself never lives here.
     private(set) var hasToken = false
     private(set) var connection: Connection = .notChecked
+    private(set) var scrobblingEnabled = AppSettings.scrobblingEnabled
+    /// nil until a scrobbler exists (scrobbling off, no token, or no game
+    /// started since launch).
+    private(set) var scrobbleStatus: ScrobbleStatus?
+    private(set) var lastScrobble: GSSession?
 
     // Not part of the UI state, so they need not be observed.
     @ObservationIgnored private let monitor = ProcessMonitor()
-    @ObservationIgnored private var watchTask: Task<Void, Never>?
     @ObservationIgnored private let tokenStore = KeychainTokenStore()
+    @ObservationIgnored private let scrobbleInput: AsyncStream<ScrobbleInput>.Continuation
+    @ObservationIgnored private var scrobbler: Scrobbler?
+    @ObservationIgnored private var tasks: [Task<Void, Never>] = []
 
     init() {
+        // The queue every scrobbling input goes through. Set first: Swift
+        // requires every stored property to have a value before `self` is
+        // used, and the tasks below use it.
+        let (inputs, continuation) = AsyncStream.makeStream(of: ScrobbleInput.self)
+        scrobbleInput = continuation
+
         // `try?` turns a thrown error into nil; `?? false` then treats an
         // unreadable Keychain like "no token".
         hasToken = (try? tokenStore.hasToken()) ?? false
@@ -49,14 +70,105 @@ final class AppModel {
         installed = InstalledGames.scan(appStore: appStore, steam: steam)
 
         let tracker = GameTracker(classifiers: [appStore, steam])
-        // Start watching right away. `[weak self]` so this long-running task
-        // does not keep the model alive forever on its own.
-        watchTask = Task { [weak self, monitor] in
+        // Watch processes and turn them into game events. `[weak self]` so
+        // these long-running tasks do not keep the model alive on their own.
+        tasks.append(Task { [weak self, monitor] in
             for await processEvent in monitor.events() {
                 for gameEvent in await tracker.handle(processEvent) {
                     self?.apply(gameEvent)
                 }
             }
+        })
+        // The one loop that talks to the scrobbler: it handles each input to
+        // the end before taking the next, so a "stopped" can never overtake
+        // the "start" request still waiting for the server.
+        tasks.append(Task { [weak self] in
+            for await input in inputs {
+                await self?.process(input)
+            }
+        })
+        // A tick a minute, so heartbeats go out on time.
+        tasks.append(Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                self?.scrobbleInput.yield(.event(.tick(.now)))
+            }
+        })
+    }
+
+    // MARK: - Games
+
+    private func apply(_ event: GameEvent) {
+        // The time is taken now, when the game started or stopped, not later
+        // when the scrobbler gets to the event.
+        let now = Date.now
+        switch event {
+        case .started(let game):
+            running.append(RunningGame(game: game, startedAt: now))
+            scrobbleInput.yield(.event(.started(game, at: now)))
+        case .stopped(let game):
+            // `removeAll(where:)` deletes every element the closure matches.
+            running.removeAll { $0.game.id == game.id }
+            scrobbleInput.yield(.event(.stopped(game, at: now)))
+        }
+    }
+
+    // MARK: - Scrobbling
+
+    func setScrobblingEnabled(_ enabled: Bool) {
+        guard enabled != scrobblingEnabled else { return }
+        scrobblingEnabled = enabled
+        AppSettings.scrobblingEnabled = enabled
+        scrobbleInput.yield(.rebuild)
+    }
+
+    private func process(_ input: ScrobbleInput) async {
+        switch input {
+        case .event(let event):
+            // Only a game starting creates a scrobbler, so the Keychain is
+            // read then, not at launch or on the first tick.
+            switch event {
+            case .tick, .stopped, .stopAll:
+                if scrobbler == nil { return }
+            case .started:
+                break
+            }
+            guard let scrobbler = makeScrobblerIfNeeded() else { return }
+            await scrobbler.handle(event)
+            await showState(of: scrobbler)
+
+        case .rebuild:
+            if let old = scrobbler {
+                await old.handle(.stopAll(at: .now))
+                await showState(of: old)
+            }
+            scrobbler = nil
+            scrobbleStatus = nil
+            // The next scrobbler hears about the games already running. These
+            // go to the back of the queue, after anything already waiting.
+            for game in running {
+                scrobbleInput.yield(.event(.started(game.game, at: .now)))
+            }
+        }
+    }
+
+    private func makeScrobblerIfNeeded() -> Scrobbler? {
+        if let scrobbler { return scrobbler }
+        guard scrobblingEnabled, hasToken,
+              let baseURL = AppSettings.baseURL,
+              let token = try? tokenStore.token()
+        else { return nil }
+        let new = Scrobbler(api: GSClient(baseURL: baseURL, token: token), deviceID: AppSettings.deviceID)
+        scrobbler = new
+        return new
+    }
+
+    /// Copies the scrobbler's state into properties the menu can observe.
+    /// Each `await` hops to the scrobbler actor to read it.
+    private func showState(of scrobbler: Scrobbler) async {
+        scrobbleStatus = await scrobbler.status
+        if let finished = await scrobbler.lastFinished {
+            lastScrobble = finished
         }
     }
 
@@ -69,6 +181,7 @@ final class AppModel {
         do {
             try tokenStore.save(token)
             hasToken = true
+            scrobbleInput.yield(.rebuild)
             checkConnection()
         } catch {
             connection = .failed("Could not save the token: \(error)")
@@ -80,6 +193,7 @@ final class AppModel {
             try tokenStore.delete()
             hasToken = false
             connection = .notChecked
+            scrobbleInput.yield(.rebuild)
         } catch {
             connection = .failed("Could not remove the token: \(error)")
         }
@@ -116,16 +230,6 @@ final class AppModel {
             } catch {
                 connection = .failed(error.summary)
             }
-        }
-    }
-
-    private func apply(_ event: GameEvent) {
-        switch event {
-        case .started(let game):
-            running.append(RunningGame(game: game, startedAt: .now))
-        case .stopped(let game):
-            // `removeAll(where:)` deletes every element the closure matches.
-            running.removeAll { $0.game.id == game.id }
         }
     }
 }
