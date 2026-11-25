@@ -163,7 +163,7 @@ final class AppModel {
             // A scrobbler is made when a game starts, or on a tick when the
             // journal holds plays to send. Otherwise the Keychain is not read.
             switch event {
-            case .stopped, .stopAll, .sleep, .wake:
+            case .stopped, .stopAll, .sleep, .wake, .ignoredGamesChanged, .addedToLibrary:
                 if scrobbler == nil { return }
             case .tick:
                 if scrobbler == nil, !journalHasPlays() { return }

@@ -23,9 +23,8 @@ public struct Play: Codable, Hashable, Identifiable, Sendable {
     public let id: String
     /// The game, for the menu.
     public let game: DetectedGame
-    /// The reference sent in `game`. It is fixed when the play begins, so a
-    /// later change to how the game is mapped never changes a request that
-    /// must be retried with exactly the same body.
+    /// The reference sent in `game`. It is fixed when the play begins and
+    /// saved with it, so a retry sends exactly the same body.
     public let ref: GameRef
     public let startedAt: Date
     /// The last time the app saw the game still running. If the app dies

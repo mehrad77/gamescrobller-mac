@@ -34,8 +34,8 @@ public struct DetectedGame: Codable, Hashable, Identifiable, Sendable {
         self.source = source
     }
 
-    /// The reference to send to GameScrobbler when nobody has mapped this game
-    /// by hand: the store's own id, such as `steam:570` or `apple:1456188526`.
+    /// The reference the game is sent to GameScrobbler as: the store's own
+    /// id, such as `steam:570` or `apple:1456188526`.
     ///
     /// Not optional: every source has a store prefix. A `switch` must cover
     /// every case, so adding a source (GOG, Epic) without a reference here is a

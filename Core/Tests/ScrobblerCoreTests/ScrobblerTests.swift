@@ -12,6 +12,8 @@ import Testing
 ///    id of one that is still open (409).
 /// 3. A live start closes this device's open session.
 /// 4. Finishing a closed session, or a heartbeat on one, answers 409.
+/// 5. A start for a game not in your library answers 404. Until a test
+///    calls `ownOnly`, you own every game.
 ///
 /// It records every call, and a test can make the next call of a kind fail.
 private actor FakeServer: SessionAPI {
@@ -58,6 +60,11 @@ private actor FakeServer: SessionAPI {
     private var heartbeatErrors: [GSClientError] = []
     private var finishErrors: [GSClientError] = []
     private var startAnswersToLose = 0
+    /// The references you own; nil owns everything.
+    private var library: Set<String>?
+
+    func ownOnly(_ refs: Set<String>) { library = refs }
+    func addToLibrary(_ ref: String) { library?.insert(ref) }
 
     func failNextStart(with error: GSClientError) { startErrors.append(error) }
     func failNextHeartbeat(with error: GSClientError) { heartbeatErrors.append(error) }
@@ -80,6 +87,8 @@ private actor FakeServer: SessionAPI {
         // A failed request changes nothing on the server, as with the real
         // one: errors roll back, and only successful answers are stored.
         if !startErrors.isEmpty { throw startErrors.removeFirst() }
+        // Rule 5.
+        if let library, !library.contains(start.game.apiValue) { throw notFound }
 
         let answer = try startOrReplay(start, key: idempotencyKey)
         if startAnswersToLose > 0 {
@@ -698,4 +707,123 @@ final class ScrobblerTests {
         #expect(FileManager.default.fileExists(atPath: damaged.path()))
         #expect(await api.calls.count == 1)
     }
+
+    // MARK: - Your library and ignored games
+
+    @Test func aGameNotInYourLibraryIsListedForYou() async {
+        await api.ownOnly([])
+
+        await scrobbler.handle(.started(motorways, at: t0))
+
+        let refused = await scrobbler.refusedGames
+        #expect(refused == [RefusedGame(game: motorways, ref: motorways.defaultRef, error: notFound, playCount: 1)])
+        #expect(refused.first?.isNotInLibrary == true)
+        #expect(await scrobbler.status == .failed(motorways, notFound))
+    }
+
+    @Test func onceAddedToYourLibraryTheRefusedPlayIsSentAgain() async {
+        await api.ownOnly([])
+        await scrobbler.handle(.started(motorways, at: t0))
+
+        await api.addToLibrary("apple:1456188526")
+        await scrobbler.handle(.addedToLibrary(gameID: motorways.id, at: minutes(2)))
+
+        // The live start goes out again, from when the game started.
+        #expect(await api.calls == [
+            .start(game: "apple:1456188526", startedAt: t0),
+            .start(game: "apple:1456188526", startedAt: t0),
+        ])
+        #expect(await scrobbler.refusedGames.isEmpty)
+        #expect(await scrobbler.status == .scrobbling(motorways, since: t0))
+        #expect(await scrobbler.recognized[motorways.id] == RecognizedGame(game: motorways, ref: motorways.defaultRef, title: "A game"))
+    }
+
+    @Test func addingAnotherGameLeavesTheseRefused() async {
+        await api.ownOnly([])
+        await scrobbler.handle(.started(motorways, at: t0))
+
+        await scrobbler.handle(.addedToLibrary(gameID: morta.id, at: minutes(2)))
+
+        #expect(await api.calls.count == 1)
+        #expect(await scrobbler.refusedGames.map(\.game) == [motorways])
+    }
+
+    @Test func aGameYouIgnoreIsNeverScrobbled() async {
+        await scrobbler.handle(.ignoredGamesChanged([motorways.id], at: t0))
+
+        await scrobbler.handle(.started(motorways, at: t0))
+        await scrobbler.handle(.stopped(motorways, at: minutes(30)))
+
+        #expect(await api.calls.isEmpty)
+        #expect(await scrobbler.status == .idle)
+        #expect(await scrobbler.unsentCount == 0)
+    }
+
+    @Test func anIgnoredGameDoesNotTakeOverFromTheGameBeingPlayed() async {
+        await scrobbler.handle(.ignoredGamesChanged([motorways.id], at: t0))
+        await scrobbler.handle(.started(morta, at: t0))
+
+        await scrobbler.handle(.started(motorways, at: minutes(1)))
+        await scrobbler.handle(.stopped(motorways, at: minutes(2)))
+
+        #expect(await api.calls == [.start(game: "steam:330020", startedAt: t0)])
+        #expect(await scrobbler.status == .scrobbling(morta, since: t0))
+    }
+
+    @Test func ignoringTheGameBeingPlayedHandsBackToTheOneBefore() async {
+        await scrobbler.handle(.started(morta, at: t0))
+        await scrobbler.handle(.started(motorways, at: minutes(10)))
+
+        await scrobbler.handle(.ignoredGamesChanged([motorways.id], at: minutes(20)))
+
+        #expect(await api.calls == [
+            .start(game: "steam:330020", startedAt: t0),
+            .finish("s1", endedAt: minutes(10)),
+            .start(game: "apple:1456188526", startedAt: minutes(10)),
+            .finish("s2", endedAt: minutes(20)),
+            .start(game: "steam:330020", startedAt: minutes(20)),
+        ])
+    }
+
+    @Test func playsOfAnIgnoredGameWaitUntilItIsBack() async {
+        await api.failNextStart(with: offline)
+        await scrobbler.handle(.started(motorways, at: t0))  // offline: retry at minute 1
+
+        await scrobbler.handle(.ignoredGamesChanged([motorways.id], at: minutes(1)))
+        await scrobbler.handle(.tick(minutes(10)))
+        #expect(await api.calls.count == 1)
+        #expect(await scrobbler.unsentCount == 0)
+
+        await scrobbler.handle(.ignoredGamesChanged([], at: minutes(20)))
+
+        // The held play goes out whole, and the game, still running, is
+        // scrobbled again from now.
+        #expect(await api.calls == [
+            .start(game: "apple:1456188526", startedAt: t0),
+            .log(game: "apple:1456188526", startedAt: t0, endedAt: minutes(1)),
+            .start(game: "apple:1456188526", startedAt: minutes(20)),
+        ])
+    }
+
+    @Test func aRefusedGameYouIgnoreNeedsNothingMore() async {
+        await api.ownOnly([])
+        await scrobbler.handle(.started(motorways, at: t0))
+
+        await scrobbler.handle(.ignoredGamesChanged([motorways.id], at: minutes(2)))
+
+        #expect(await scrobbler.refusedGames.isEmpty)
+        #expect(await scrobbler.status == .idle)
+    }
+
+    @Test func aFinishRefusedForAGoneSessionIsNotAboutTheLibrary() async {
+        await scrobbler.handle(.started(motorways, at: t0))
+        await api.failNextFinish(with: notFound)
+
+        await scrobbler.handle(.stopped(motorways, at: minutes(3)))
+
+        let refused = await scrobbler.refusedGames
+        #expect(refused.map(\.game) == [motorways])
+        #expect(refused.first?.isNotInLibrary == false)
+    }
 }
+

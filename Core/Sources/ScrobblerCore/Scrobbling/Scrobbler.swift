@@ -31,14 +31,53 @@ public enum ScrobbleEvent: Sendable, Equatable {
     case sleep(at: Date)
     /// The Mac woke up: the newest game still running gets a new play.
     case wake(at: Date)
+    /// You set a game not to be scrobbled, or back: these are the ids of
+    /// the games not to scrobble now.
+    case ignoredGamesChanged(Set<String>, at: Date)
+    /// The game is in your library now: the plays the server refused for it
+    /// are sent again.
+    case addedToLibrary(gameID: String, at: Date)
 
     var time: Date {
         switch self {
         case .started(_, let time), .stopped(_, let time), .tick(let time),
-             .stopAll(let time), .sleep(let time), .wake(let time):
+             .stopAll(let time), .sleep(let time), .wake(let time),
+             .ignoredGamesChanged(_, let time), .addedToLibrary(_, let time):
             time
         }
     }
+}
+
+/// A game whose plays the server refused on this run, for the menu's
+/// "needs your attention" list.
+public struct RefusedGame: Sendable, Equatable, Identifiable {
+    public let game: DetectedGame
+    /// The reference the server refused.
+    public let ref: GameRef
+    public let error: GSClientError
+    /// How many of its plays wait for an answer from you.
+    public let playCount: Int
+    /// Whether the refused request was about a session the server already
+    /// took (a finish): then a 404 means the session is gone, not the game.
+    public var serverHadIt = false
+
+    public var id: String { game.id }
+
+    /// A start refused with 404: the game is not in your library, or
+    /// GameScrobbler does not know the reference. Adding it tells which.
+    public var isNotInLibrary: Bool {
+        if case .api(let error) = error { return error.status == 404 && !serverHadIt }
+        return false
+    }
+}
+
+/// A game the server took a session for on this run: proof that the
+/// reference works, and the title GameScrobbler knows it by.
+public struct RecognizedGame: Sendable, Equatable {
+    public let game: DetectedGame
+    public let ref: GameRef
+    public let title: String
+    public var slug: String? = nil
 }
 
 /// What the menu shows about scrobbling.
@@ -75,6 +114,10 @@ public enum ScrobbleStatus: Sendable, Equatable {
 ///   it (45 silent minutes, or the 24-hour limit): a new play begins.
 /// - Sleep ends the open play; the wake begins a new one for the newest game
 ///   still running. Nothing is scrobbled while the Mac sleeps.
+/// - A game you set not to be scrobbled is invisible: it never gets a play,
+///   and the game running before it keeps its own. Plays of it the server
+///   never took stay in the journal, unsent, until they age out, so turning
+///   it back on within 7 days loses nothing.
 /// - A play counts once it has lasted `minPlayLength` (a minute). Its live
 ///   start waits until then (with the real `startedAt`), and a play that
 ///   ends sooner is dropped, so a quick launch, a quick switch or a crash
@@ -103,8 +146,11 @@ public actor Scrobbler {
     private let minPlayLength: TimeInterval
     private let makeID: @Sendable () -> String
 
-    /// Running games, oldest first. The last one is the one being scrobbled.
+    /// Running games, oldest first. The last one not ignored is the one
+    /// being scrobbled (`current`).
     private var games: [DetectedGame] = []
+    /// The ids of the games you set not to be scrobbled.
+    private var ignored: Set<String>
     /// Between `.sleep` and `.wake`: games are still tracked, but no play
     /// begins.
     private var asleep = false
@@ -127,6 +173,25 @@ public actor Scrobbler {
     public private(set) var status: ScrobbleStatus = .idle
     /// The session finished most recently, as the server recorded it.
     public private(set) var lastFinished: GSSession?
+    /// Games the server took a session for on this run, by game id.
+    public private(set) var recognized: [String: RecognizedGame] = [:]
+
+    /// The games whose plays the server refused on this run, in the order
+    /// their plays are in.
+    public var refusedGames: [RefusedGame] {
+        var result: [RefusedGame] = []
+        for play in plays {
+            // A game you set not to be scrobbled needs nothing from you.
+            guard let error = refused[play.id], !ignored.contains(play.game.id) else { continue }
+            if let index = result.firstIndex(where: { $0.game.id == play.game.id }) {
+                let old = result[index]
+                result[index] = RefusedGame(game: old.game, ref: old.ref, error: old.error, playCount: old.playCount + 1, serverHadIt: old.serverHadIt)
+            } else {
+                result.append(RefusedGame(game: play.game, ref: play.ref, error: error, playCount: 1, serverHadIt: play.sessionID != nil))
+            }
+        }
+        return result
+    }
 
     /// The time of the last event handled: "now", as far as the scrobbler
     /// knows.
@@ -136,7 +201,7 @@ public actor Scrobbler {
     /// minute is not counted: its start is not due yet, so it is not waiting.
     public var unsentCount: Int {
         plays.count { play in
-            guard let request = play.nextRequest else { return false }
+            guard let request = play.nextRequest, !isHeldBack(play) else { return false }
             if request == .liveStart, let now = lastEventTime,
                now.timeIntervalSince(play.startedAt) < minPlayLength {
                 return false
@@ -155,6 +220,8 @@ public actor Scrobbler {
     ///     refuse as too old.
     ///   - heartbeatInterval: seconds between heartbeats; the guide suggests 5
     ///     minutes and the server closes a session after 45 silent ones.
+    ///   - ignoredGames: the ids of the games not to scrobble;
+    ///     `ignoredGamesChanged` updates them.
     ///   - minPlayLength: seconds a play must last to be sent. Most tests pass
     ///     0, so a start goes out at once.
     ///   - makeID: makes `clientSessionId`s and idempotency keys. Tests pass a
@@ -163,6 +230,7 @@ public actor Scrobbler {
         api: any SessionAPI,
         deviceID: String,
         journal: PlayJournal,
+        ignoredGames: Set<String> = [],
         now: Date = .now,
         heartbeatInterval: TimeInterval = 5 * 60,
         minPlayLength: TimeInterval = 60,
@@ -171,6 +239,7 @@ public actor Scrobbler {
         self.api = api
         self.deviceID = deviceID
         self.journal = journal
+        self.ignored = ignoredGames
         self.heartbeatInterval = heartbeatInterval
         self.minPlayLength = minPlayLength
         self.makeID = makeID
@@ -216,6 +285,14 @@ public actor Scrobbler {
             endOpenPlay(at: time)
         case .wake(let time):
             wokeUp(at: time)
+        case .ignoredGamesChanged(let new, let time):
+            ignoredGamesChanged(to: new, at: time)
+        case .addedToLibrary(let gameID, _):
+            // The plays go out again with the same body and key: a refused
+            // request leaves no key behind on the server.
+            refused = refused.filter { id, _ in
+                plays.first { $0.id == id }?.game.id != gameID
+            }
         }
         plays.removeAll { Self.isTooOld($0, at: event.time) || Self.isTooShort($0, minimum: minPlayLength) }
         save()
@@ -228,28 +305,37 @@ public actor Scrobbler {
 
     // MARK: - Events
 
+    /// The game being scrobbled: the newest one running that is not ignored.
+    private var current: DetectedGame? {
+        games.last { !ignored.contains($0.id) }
+    }
+
     private func gameStarted(_ game: DetectedGame, at time: Date) {
         guard !games.contains(where: { $0.id == game.id }) else { return }
+        let before = current
         games.append(game)
-        // Asleep, there is no play to end, and the new one waits for the wake.
-        guard !asleep else { return }
         // Newest wins: the older game's play ends, and this one's begins.
-        endOpenPlay(at: time)
-        beginPlay(of: game, at: time)
+        // An ignored game changes nothing.
+        follow(from: before, at: time)
     }
 
     private func gameStopped(_ game: DetectedGame, at time: Date) {
         guard let index = games.firstIndex(where: { $0.id == game.id }) else { return }
-        let wasNewest = index == games.count - 1
+        let before = current
         games.remove(at: index)
-        // An older game quitting changes nothing on the server, and neither
-        // does any game quitting while the Mac sleeps: its play already ended.
-        guard wasNewest, !asleep else { return }
+        // When the game being scrobbled quits, the one running before it
+        // takes over. An older game quitting changes nothing.
+        follow(from: before, at: time)
+    }
 
+    /// Once the game being scrobbled changed, its play ends and the new
+    /// one's begins. Asleep, nothing happens: the play already ended at the
+    /// sleep, and the wake begins the next one.
+    private func follow(from before: DetectedGame?, at time: Date) {
+        guard !asleep, current?.id != before?.id else { return }
         endOpenPlay(at: time)
-        // The game that was running before this one takes over.
-        if let next = games.last {
-            beginPlay(of: next, at: time)
+        if let current {
+            beginPlay(of: current, at: time)
         }
     }
 
@@ -258,9 +344,17 @@ public actor Scrobbler {
     private func wokeUp(at time: Date) {
         guard asleep else { return }
         asleep = false
-        if let newest = games.last {
-            beginPlay(of: newest, at: time)
+        if let current {
+            beginPlay(of: current, at: time)
         }
+    }
+
+    /// The game being scrobbled may have been ignored, or an ignored one
+    /// turned back on: the play follows whichever is current now.
+    private func ignoredGamesChanged(to new: Set<String>, at time: Date) {
+        let before = current
+        ignored = new
+        follow(from: before, at: time)
     }
 
     private func beginPlay(of game: DetectedGame, at time: Date) {
@@ -312,7 +406,8 @@ public actor Scrobbler {
             guard canSend(at: now) else { return }
             guard refused[id] == nil,
                   let play = plays.first(where: { $0.id == id }),
-                  let request = play.nextRequest
+                  let request = play.nextRequest,
+                  !isHeldBack(play)
             else { continue }
 
             switch request {
@@ -336,6 +431,7 @@ public actor Scrobbler {
         do throws(GSClientError) {
             let session = try await api.startSession(startRequest(for: play), idempotencyKey: play.idempotencyKey)
             reachedServer()
+            recognize(play, in: session)
             change(play.id) { $0.sessionID = session.id }
             nextHeartbeat = now + heartbeatInterval
         } catch {
@@ -391,12 +487,25 @@ public actor Scrobbler {
     private func sendLog(_ play: Play, endedAt: Date, now: Date) async {
         do throws(GSClientError) {
             let request = startRequest(for: play, endedAt: endedAt)
-            lastFinished = try await api.startSession(request, idempotencyKey: play.idempotencyKey)
+            let session = try await api.startSession(request, idempotencyKey: play.idempotencyKey)
+            lastFinished = session
             reachedServer()
+            recognize(play, in: session)
             remove(play.id)
         } catch {
             react(to: error, for: play.id, at: now)
         }
+    }
+
+    private func recognize(_ play: Play, in session: GSSession) {
+        recognized[play.game.id] = RecognizedGame(game: play.game, ref: play.ref, title: session.gameTitle, slug: session.gameSlug)
+    }
+
+    /// A play of a game you set not to be scrobbled, that the server never
+    /// took: it waits in the journal, unsent. One the server has is finished
+    /// as usual.
+    private func isHeldBack(_ play: Play) -> Bool {
+        play.sessionID == nil && ignored.contains(play.game.id)
     }
 
     /// The body is built from the play's own fields every time, so a retry

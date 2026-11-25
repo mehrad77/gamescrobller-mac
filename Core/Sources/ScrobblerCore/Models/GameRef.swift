@@ -97,7 +97,7 @@ extension GameRef {
     /// The store's own id after the colon: letters, digits, `.`, `_`, `-`.
     static var storeIDPattern: Regex<Substring> { #/[A-Za-z0-9._-]{1,200}/# }
 
-    /// Parses what a person types into the mapping editor, in the server's
+    /// Parses a reference read back from the play journal, in the server's
     /// order: digits are refused, an id-shaped text is an id, `store:id` is a
     /// store reference, and anything else must be a valid slug.
     ///
