@@ -31,6 +31,17 @@ enum AppSettings {
         set { UserDefaults.standard.set(newValue, forKey: "scrobblingEnabled") }
     }
 
+    /// The journal of plays for the server at `baseURL`, in
+    /// `~/Library/Application Support/<bundle id>/`, the folder macOS gives
+    /// each app for files it keeps for itself. nil only if macOS has no such
+    /// folder, which does not happen in practice.
+    static func journal(for baseURL: URL) -> PlayJournal? {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return nil }
+        let folder = support.appending(path: Bundle.main.bundleIdentifier ?? "GameScrobbler")
+        return PlayJournal(directory: folder, server: baseURL)
+    }
+
     /// This Mac's `deviceId` for the API: made once, then kept forever, so
     /// every session from this Mac counts as the same device.
     static var deviceID: String {

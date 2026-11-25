@@ -46,6 +46,8 @@ final class AppModel {
     /// started since launch).
     private(set) var scrobbleStatus: ScrobbleStatus?
     private(set) var lastScrobble: GSSession?
+    /// Plays saved in the journal and not yet sent.
+    private(set) var unsentCount = 0
 
     // Not part of the UI state, so they need not be observed.
     @ObservationIgnored private let monitor = ProcessMonitor()
@@ -87,7 +89,9 @@ final class AppModel {
                 await self?.process(input)
             }
         })
-        // A tick a minute, so heartbeats go out on time.
+        // A tick now, so plays left from the last run go out at launch, then
+        // one a minute, so heartbeats and retries go out on time.
+        scrobbleInput.yield(.event(.tick(.now)))
         tasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -125,11 +129,13 @@ final class AppModel {
     private func process(_ input: ScrobbleInput) async {
         switch input {
         case .event(let event):
-            // Only a game starting creates a scrobbler, so the Keychain is
-            // read then, not at launch or on the first tick.
+            // A scrobbler is made when a game starts, or on a tick when the
+            // journal holds plays to send. Otherwise the Keychain is not read.
             switch event {
-            case .tick, .stopped, .stopAll:
+            case .stopped, .stopAll:
                 if scrobbler == nil { return }
+            case .tick:
+                if scrobbler == nil, !journalHasPlays() { return }
             case .started:
                 break
             }
@@ -156,17 +162,37 @@ final class AppModel {
         if let scrobbler { return scrobbler }
         guard scrobblingEnabled, hasToken,
               let baseURL = AppSettings.baseURL,
+              let journal = AppSettings.journal(for: baseURL),
               let token = try? tokenStore.token()
         else { return nil }
-        let new = Scrobbler(api: GSClient(baseURL: baseURL, token: token), deviceID: AppSettings.deviceID)
+        let new = Scrobbler(
+            api: GSClient(baseURL: baseURL, token: token),
+            deviceID: AppSettings.deviceID,
+            journal: journal
+        )
         scrobbler = new
         return new
+    }
+
+    /// Whether the current server's journal holds plays. Read from the file
+    /// on every tick while there is no scrobbler: it is small.
+    private func journalHasPlays() -> Bool {
+        guard scrobblingEnabled, hasToken,
+              let baseURL = AppSettings.baseURL,
+              let journal = AppSettings.journal(for: baseURL)
+        else { return false }
+        // `try?` makes a damaged file read as nil, so it waits for the next
+        // game start, whose scrobbler sets it aside.
+        let plays = (try? journal.load()) ?? []
+        unsentCount = plays.count
+        return !plays.isEmpty
     }
 
     /// Copies the scrobbler's state into properties the menu can observe.
     /// Each `await` hops to the scrobbler actor to read it.
     private func showState(of scrobbler: Scrobbler) async {
         scrobbleStatus = await scrobbler.status
+        unsentCount = await scrobbler.unsentCount
         if let finished = await scrobbler.lastFinished {
             lastScrobble = finished
         }

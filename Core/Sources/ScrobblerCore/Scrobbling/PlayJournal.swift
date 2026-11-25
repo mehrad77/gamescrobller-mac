@@ -68,6 +68,15 @@ public struct PlayJournal: Sendable {
         try data.write(to: fileURL, options: .atomic)
     }
 
+    /// Moves a file `load` could not read out of the way, to
+    /// `plays-<host>.damaged.json`, so the next save starts a new journal and
+    /// the old file is kept for a look. An older damaged file is replaced.
+    public func setAside() throws {
+        let damaged = fileURL.deletingPathExtension().appendingPathExtension("damaged.json")
+        try? FileManager.default.removeItem(at: damaged)
+        try FileManager.default.moveItem(at: fileURL, to: damaged)
+    }
+
     // MARK: - JSON
 
     /// The API's own date format, so a time read back from the file is sent

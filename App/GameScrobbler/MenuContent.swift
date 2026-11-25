@@ -32,6 +32,11 @@ struct MenuContent: View {
                 }
             }
             Text(scrobbleLine)
+            if model.unsentCount > 0 {
+                // `^[…](inflect: true)` is *automatic grammar agreement*:
+                // Foundation writes "1 play" or "2 plays" to match the number.
+                Text("^[\(model.unsentCount) play](inflect: true) saved, waiting to be sent")
+            }
             if let last = model.lastScrobble {
                 Text("Last scrobbled: \(last.gameTitle), \(last.durationSeconds / 60) min")
             }
@@ -73,8 +78,10 @@ extension MenuContent {
             return "Ready to scrobble"
         case .scrobbling(let game, _)?:
             return "Scrobbling \(game.name)"
+        case .waiting(let until, let error)?:
+            return "Trying again at \(until.formatted(date: .omitted, time: .shortened)). \(error.summary)"
         case .failed(let game, let error)?:
-            return "Not scrobbled: \(game.name). \(error.summary)"
+            return "Not scrobbled: \(game.name). Kept for the next launch. \(error.summary)"
         case .signedOut(let error)?:
             return "Stopped scrobbling. \(error.summary)"
         }

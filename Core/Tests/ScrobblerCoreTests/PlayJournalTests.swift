@@ -76,6 +76,17 @@ final class PlayJournalTests {
         #expect(throws: DecodingError.self) { try self.journal.load() }
     }
 
+    @Test func aDamagedFileCanBeSetAside() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("not a journal".utf8).write(to: journal.fileURL)
+
+        try journal.setAside()
+
+        #expect(try journal.load().isEmpty)
+        let damaged = directory.appending(path: "plays.damaged.json")
+        #expect(try String(contentsOf: damaged, encoding: .utf8) == "not a journal")
+    }
+
     @Test("one file per server", arguments: [
         ("https://api.gamescrobbler.com/v1", "plays-api.gamescrobbler.com.json"),
         ("http://localhost:8000/v1", "plays-localhost-8000.json"),
